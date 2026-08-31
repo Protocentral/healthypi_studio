@@ -1,0 +1,338 @@
+# Build HealthyPi Studio desktop release binaries.
+#
+# Triggers:
+#   - Git tags matching v* (e.g. v1.0.0) → create a GitHub Release
+#   - workflow_dispatch → manual build; upload workflow artifacts only
+#
+# Artifacts:
+#   HealthyPiStudio-linux-x64.zip
+#   HealthyPiStudio-linux-arm64.zip     (Raspberry Pi and other ARM SBCs)
+#   HealthyPiStudio-windows-x64.zip
+#   HealthyPiStudio-macos-universal.zip (Intel + Apple Silicon; ad-hoc signed)
+#   SHA256SUMS.txt
+#
+# Desktop only, and it stays that way: the android/, ios/ and web/ targets were
+# deleted on 2026-08-05. Do not add a mobile job without restoring the platform
+# folders and sorting out release signing first.
+name: Release builds
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Releases pin an exact Flutter version so a rebuild of a tag is reproducible
+  # and a bad upstream stable can never silently break a release.
+  FLUTTER_VERSION: 3.44.6
+
+jobs:
+  # ── Guard: tag must match the pubspec version ──────────────────────────
+  # Cheap job that fails in ~10s rather than after four platform builds.
+  version:
+    name: Check version
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # A pre-release tag is allowed to sit on the version it is a candidate
+      # for: v1.0.0-rc.1 against pubspec 1.0.0 is exactly what a release
+      # candidate means, and requiring an exact string match made it impossible
+      # to rehearse a release without first putting a throwaway version in
+      # pubspec.yaml. A final tag must still match exactly.
+      - name: Tag matches pubspec version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"                       # v1.0.0 → 1.0.0
+          pubspec=$(grep -m1 '^version:' pubspec.yaml | awk '{print $2}')
+          pubspec="${pubspec%%+*}"                         # 1.0.0+1 → 1.0.0
+          tag_core="${tag%%-*}"                            # 1.0.0-rc.1 → 1.0.0
+          echo "tag=$tag tag_core=$tag_core pubspec=$pubspec"
+          if [ "$tag" = "$pubspec" ]; then
+            echo "Final release tag matches pubspec."
+          elif [ "$tag" != "$tag_core" ] && [ "$tag_core" = "$pubspec" ]; then
+            echo "Pre-release tag for pubspec version $pubspec."
+            echo "PRERELEASE=true" >> "$GITHUB_ENV"
+          else
+            echo "::error::Tag $GITHUB_REF_NAME does not match pubspec version $pubspec." \
+                 "Bump pubspec.yaml or retag."
+            exit 1
+          fi
+
+  # ── Linux desktop ──────────────────────────────────────────────────────
+  linux:
+    name: Linux x64
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      # libudev-dev is required by libserialport, which flutter_libserialport
+      # builds from source.
+      - name: Install system packages
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libudev-dev
+
+      - name: Flutter config & deps
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+
+      - name: Build Linux release
+        run: flutter build linux --release
+
+      - name: Package
+        run: |
+          cd build/linux/x64/release/bundle
+          zip -r "$GITHUB_WORKSPACE/HealthyPiStudio-linux-x64.zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthyPiStudio-linux-x64
+          path: HealthyPiStudio-linux-x64.zip
+          if-no-files-found: error
+
+  # ── Linux desktop (ARM64) ──────────────────────────────────────────────
+  # Native aarch64 build on GitHub's free arm64 runner, for Raspberry Pi and
+  # other ARM SBCs — a common host for a HealthyPi board.
+  #
+  # Flutter does not publish prebuilt Linux *arm64* SDK archives, so
+  # subosito/flutter-action can't resolve a pinned version here ("Unable to
+  # determine Flutter version ... architecture: arm64"). Install the SDK with a
+  # shallow git clone at the version tag instead; `flutter` bootstraps the
+  # matching arm64 Dart SDK and engine artifacts on first run.
+  linux-arm64:
+    name: Linux arm64
+    needs: version
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Flutter (arm64 via git)
+        run: |
+          git clone --depth 1 --branch "$FLUTTER_VERSION" \
+            https://github.com/flutter/flutter.git "$HOME/flutter"
+          echo "$HOME/flutter/bin" >> "$GITHUB_PATH"
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            libudev-dev
+
+      - name: Flutter config & deps
+        run: |
+          flutter config --enable-linux-desktop
+          flutter pub get
+
+      - name: Build Linux release
+        run: flutter build linux --release
+
+      - name: Package
+        run: |
+          cd build/linux/arm64/release/bundle
+          zip -r "$GITHUB_WORKSPACE/HealthyPiStudio-linux-arm64.zip" .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthyPiStudio-linux-arm64
+          path: HealthyPiStudio-linux-arm64.zip
+          if-no-files-found: error
+
+  # ── Windows desktop ────────────────────────────────────────────────────
+  windows:
+    name: Windows x64
+    needs: version
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Flutter config & deps
+        run: |
+          flutter config --enable-windows-desktop
+          flutter pub get
+
+      - name: Build Windows release
+        env:
+          # MSVC 14.51 (VS 18, on windows-latest) makes <experimental/coroutine>
+          # a hard error — STL1011. cl.exe picks up extra flags from the CL env
+          # var, so this pre-emptively silences it for any plugin that still
+          # includes the old header rather than <coroutine>. Harmless otherwise.
+          CL: /D_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS
+        run: flutter build windows --release
+
+      - name: Package
+        shell: pwsh
+        run: |
+          Compress-Archive -Path build/windows/x64/runner/Release/* `
+            -DestinationPath HealthyPiStudio-windows-x64.zip -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthyPiStudio-windows-x64
+          path: HealthyPiStudio-windows-x64.zip
+          if-no-files-found: error
+
+  # ── macOS desktop ──────────────────────────────────────────────────────
+  # The Xcode project uses Automatic signing, so a plain `flutter build macos`
+  # on a runner can fail for want of a signing certificate. We therefore
+  # configure with Flutter and build with xcodebuild, overriding the signing
+  # settings on the command line (command-line settings outrank the ones baked
+  # into project.pbxproj).
+  #
+  # The app is ad-hoc signed: it runs, but it is not notarized, so Gatekeeper
+  # shows "Apple cannot check it for malicious software" on first launch and the
+  # user must right-click → Open (or clear the quarantine bit). Developer ID
+  # signing + notarization is a follow-up.
+  #
+  # Built as a universal binary (x86_64 + arm64) so a single download runs on
+  # both Intel and Apple Silicon Macs. The deployment target is 10.15, so Intel
+  # support reaches back to Catalina.
+  macos:
+    name: macOS universal
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          channel: stable
+          cache: true
+
+      - name: Install build tools (libserialport)
+        run: brew install automake libtool
+
+      - name: Flutter config & deps
+        run: |
+          flutter config --enable-macos-desktop
+          flutter pub get
+
+      - name: Build macOS release
+        run: |
+          # Generate the ephemeral xcconfig / plugin registrant without building.
+          flutter build macos --release --config-only
+
+          # ARCHS + ONLY_ACTIVE_ARCH=NO force a universal (Intel + Apple Silicon)
+          # binary; the pods (libserialport) build both slices from source.
+          xcodebuild \
+            -workspace macos/Runner.xcworkspace \
+            -scheme Runner \
+            -configuration Release \
+            -derivedDataPath "$RUNNER_TEMP/dd" \
+            ARCHS="x86_64 arm64" \
+            ONLY_ACTIVE_ARCH=NO \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY=- \
+            PROVISIONING_PROFILE_SPECIFIER= \
+            build
+
+      - name: Package
+        run: |
+          app="$RUNNER_TEMP/dd/Build/Products/Release/healthypi_studio.app"
+          if [ ! -d "$app" ]; then
+            echo "::error::healthypi_studio.app not found at $app"
+            find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 3 -name '*.app' || true
+            exit 1
+          fi
+          # Fail if the main binary is not actually universal.
+          archs=$(lipo -archs "$app/Contents/MacOS/healthypi_studio")
+          echo "healthypi_studio binary archs: $archs"
+          for want in x86_64 arm64; do
+            case " $archs " in
+              *" $want "*) ;;
+              *) echo "::error::macOS binary is missing the $want slice ($archs)"; exit 1 ;;
+            esac
+          done
+          codesign --verify --strict --verbose=2 "$app"
+          # ditto (not zip) preserves app-bundle metadata and symlinks.
+          ditto -c -k --sequesterRsrc --keepParent "$app" HealthyPiStudio-macos-universal.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: HealthyPiStudio-macos-universal
+          path: HealthyPiStudio-macos-universal.zip
+          if-no-files-found: error
+
+  # ── Publish GitHub Release (tags only) ─────────────────────────────────
+  publish:
+    name: Publish GitHub Release
+    needs: [linux, linux-arm64, windows, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: release
+        run: |
+          sha256sum ./*.zip | sed 's|\./||' | tee SHA256SUMS.txt
+
+      # A tag carrying a pre-release suffix publishes as a GitHub pre-release, so
+      # it never displaces the current stable download on the releases page.
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          files: |
+            release/HealthyPiStudio-linux-x64.zip
+            release/HealthyPiStudio-linux-arm64.zip
+            release/HealthyPiStudio-windows-x64.zip
+            release/HealthyPiStudio-macos-universal.zip
+            release/SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

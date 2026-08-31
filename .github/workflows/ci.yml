@@ -1,0 +1,51 @@
+# Continuous integration — fast feedback on every push/PR.
+#
+# CI deliberately tracks the latest Flutter stable so upstream breakage shows up
+# here first. Release builds pin an exact version (see release.yml).
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze-and-test:
+    name: Analyze & test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Flutter version
+        run: flutter --version
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Blocking. The project holds at zero errors and zero warnings; the 107
+      # remaining `info` lints are pre-existing style nits, so infos are not fatal.
+      - name: Analyze
+        run: flutter analyze --no-fatal-infos
+
+      # Blocking. The suite is green: 126 passing, 0 failing, as of 2026-08-31.
+      # The 25 failures this step used to tolerate were tests of the OpenView
+      # wire parser, which the 2026-06-08 .HP6 DBLK migration made unreachable;
+      # they and the dead parser were deleted rather than left failing.
+      - name: Test
+        run: flutter test

@@ -1,0 +1,121 @@
+name: healthypi_studio
+description: "HealthyPi Studio - Desktop workstation for HealthyPi 6: live biosignals over USB and WiFi, recording, export and firmware update."
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.10.0
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # BLE Support
+  flutter_blue_plus: ^1.32.12
+
+  # USB Serial Support (desktop only - macOS, Windows, Linux)
+  flutter_libserialport: ^0.2.0
+
+  # Charting is hand-rolled: waveforms are Canvas painters in lib/widgets/hpi/,
+  # so no chart package is a dependency.
+
+  # State Management
+  provider: ^6.1.2
+
+  # Window Manager for Desktop
+  window_manager: ^0.4.2
+  
+  # File system and paths
+  path_provider: ^2.1.1
+  path: ^1.8.3
+
+  # Date/number formatting for exports and filenames. Direct dependency: it used
+  # to arrive transitively through the chart packages.
+  intl: ^0.19.0
+
+  # FFT for EEG frequency analysis
+  fftea: ^1.2.0
+
+  # Firmware OTA: SHA-256 for MCUmgr image test, and a desktop file picker.
+  crypto: ^3.0.3
+  file_picker: ^8.1.6
+
+  # MCUmgr / SMP: the protocol client, the management groups, and Zephyr's
+  # uart_mcumgr framing. Transports live in lib/services/smp/.
+  mcumgr_dart: ^0.3.0
+
+  # The app version, read from the built bundle rather than typed into a screen
+  # where it would drift from `version:` above.
+  package_info_plus: ^8.0.0
+
+dependency_overrides:
+  ffi: ^2.0.0
+  flutter_libserialport:
+    git:
+      url: https://github.com/jpnurmi/flutter_libserialport.git
+      ref: main
+
+
+dev_dependencies:
+  build_runner: ^2.4.0
+  flutter_test:
+    sdk: flutter
+
+  # The "flutter_lints" package below contains a set of recommended lints to
+  # encourage good coding practices. The lint set provided by the package is
+  # activated in the `analysis_options.yaml` file located at the root of your
+  # package. See that file for information about deactivating specific lint
+  # rules and activating additional ones.
+  flutter_lints: ^6.0.0
+
+# For information on the generic Dart part of this file, see the
+# following page: https://dart.dev/tools/pub/pubspec
+
+# The following section is specific to Flutter packages.
+flutter:
+
+  # The following line ensures that the Material Icons font is
+  # included with your application, so that you can use the icons in
+  # the material Icons class.
+  uses-material-design: true
+
+  assets:
+    - assets/brand/
+
+  # Type system from the design guidelines: Saira for screen titles, Jost for
+  # UI/nav/buttons, Montserrat for body copy, JetBrains Mono for every number.
+  # Bundled as static instances so the app renders identically offline.
+  fonts:
+    - family: Saira
+      fonts:
+        - asset: assets/fonts/Saira-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/Saira-Bold.ttf
+          weight: 700
+    - family: Jost
+      fonts:
+        - asset: assets/fonts/Jost-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Jost-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Jost-SemiBold.ttf
+          weight: 600
+    - family: Montserrat
+      fonts:
+        - asset: assets/fonts/Montserrat-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/Montserrat-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/Montserrat-SemiBold.ttf
+          weight: 600
+    - family: JetBrainsMono
+      fonts:
+        - asset: assets/fonts/JetBrainsMono-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/JetBrainsMono-Medium.ttf
+          weight: 500
+        - asset: assets/fonts/JetBrainsMono-SemiBold.ttf
+          weight: 600
+        - asset: assets/fonts/JetBrainsMono-Bold.ttf
+          weight: 700
