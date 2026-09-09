@@ -83,6 +83,17 @@ flutter:
   assets:
     - assets/brand/
 
+    # App icon. macOS and Windows compile their own copies in (the .appiconset
+    # and the .ico), so these are here for Linux: the GTK runner has no icon
+    # resource to compile and loads these from the bundle at startup — see
+    # linux/runner/my_application.cc. 512 and 1024 stay out; no window manager
+    # asks for them.
+    - assets/icons/app_icon_16.png
+    - assets/icons/app_icon_32.png
+    - assets/icons/app_icon_64.png
+    - assets/icons/app_icon_128.png
+    - assets/icons/app_icon_256.png
+
   # Type system from the design guidelines: Saira for screen titles, Jost for
   # UI/nav/buttons, Montserrat for body copy, JetBrains Mono for every number.
   # Bundled as static instances so the app renders identically offline.

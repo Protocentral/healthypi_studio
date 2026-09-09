@@ -275,15 +275,15 @@ jobs:
 
       - name: Package
         run: |
-          app="$RUNNER_TEMP/dd/Build/Products/Release/healthypi_studio.app"
+          app="$RUNNER_TEMP/dd/Build/Products/Release/HealthyPi Studio.app"
           if [ ! -d "$app" ]; then
-            echo "::error::healthypi_studio.app not found at $app"
+            echo "::error::HealthyPi Studio.app not found at $app"
             find "$RUNNER_TEMP/dd/Build/Products" -maxdepth 3 -name '*.app' || true
             exit 1
           fi
           # Fail if the main binary is not actually universal.
-          archs=$(lipo -archs "$app/Contents/MacOS/healthypi_studio")
-          echo "healthypi_studio binary archs: $archs"
+          archs=$(lipo -archs "$app/Contents/MacOS/HealthyPi Studio")
+          echo "HealthyPi Studio binary archs: $archs"
           for want in x86_64 arm64; do
             case " $archs " in
               *" $want "*) ;;

@@ -19,9 +19,49 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
 }
 
+// Loads the app icon out of the Flutter asset bundle and makes it the default
+// for every window: GTK uses it for the title bar, the taskbar and alt-tab.
+//
+// Flutter's Linux runner ships no icon at all, and unlike macOS and Windows
+// there is nothing to compile one into — so the PNGs ride along in
+// flutter_assets (see pubspec.yaml) and are loaded from a path relative to the
+// executable, which keeps the bundle relocatable.
+static void set_default_app_icon() {
+  g_autofree gchar* exe_path = g_file_read_link("/proc/self/exe", nullptr);
+  if (exe_path == nullptr) {
+    return;
+  }
+  g_autofree gchar* exe_dir = g_path_get_dirname(exe_path);
+
+  // Several sizes, so the window manager scales as little as possible.
+  const int sizes[] = {16, 32, 64, 128, 256};
+  GList* icons = nullptr;
+  for (size_t i = 0; i < G_N_ELEMENTS(sizes); i++) {
+    g_autofree gchar* name = g_strdup_printf("app_icon_%d.png", sizes[i]);
+    g_autofree gchar* path =
+        g_build_filename(exe_dir, "data", "flutter_assets", "assets", "icons",
+                         name, nullptr);
+    GdkPixbuf* pixbuf = gdk_pixbuf_new_from_file(path, nullptr);
+    if (pixbuf != nullptr) {
+      icons = g_list_prepend(icons, pixbuf);
+    }
+  }
+
+  if (icons == nullptr) {
+    g_warning("App icon not found in the asset bundle; using the GTK default.");
+    return;
+  }
+  gtk_window_set_default_icon_list(icons);
+  g_list_free_full(icons, g_object_unref);
+}
+
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
+
+  // Before the window exists, so it is created with the icon already set.
+  set_default_app_icon();
+
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
@@ -45,11 +85,11 @@ static void my_application_activate(GApplication* application) {
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "healthypi_studio");
+    gtk_header_bar_set_title(header_bar, "HealthyPi Studio");
     gtk_header_bar_set_show_close_button(header_bar, TRUE);
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
   } else {
-    gtk_window_set_title(window, "healthypi_studio");
+    gtk_window_set_title(window, "HealthyPi Studio");
   }
 
   gtk_window_set_default_size(window, 1280, 720);

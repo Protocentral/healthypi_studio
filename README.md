@@ -49,7 +49,7 @@ blocked; right-click and choose **Open**, or clear the quarantine flag. On Linux
 join the `dialout` group so the app can open the board's serial ports:
 
 ```sh
-xattr -dr com.apple.quarantine healthypi_studio.app   # macOS
+xattr -dr com.apple.quarantine "HealthyPi Studio.app" # macOS
 sudo usermod -aG dialout "$USER"                      # Linux — log out and back in
 ```
 
