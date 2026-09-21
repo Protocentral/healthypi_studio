@@ -2,7 +2,7 @@ name: healthypi_studio
 description: "HealthyPi Studio - Desktop workstation for HealthyPi 6: live biosignals over USB and WiFi, recording, export and firmware update."
 publish_to: 'none'
 
-version: 1.0.0+1
+version: 1.0.1+2
 
 environment:
   sdk: ^3.10.0
