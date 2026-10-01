@@ -193,7 +193,8 @@ class RecordingExportService extends ChangeNotifier {
   ///
   /// Exports HRV data in a standardized CSV format with the following columns:
   /// timestamp_ms, heart_rate, rr_interval_ms, sdnn_ms, rmssd_ms, pnn50,
-  /// signal_quality, hrv_valid, mean_rr_ms, arrhythmia_flags
+  /// signal_quality, hrv_valid, mean_rr_ms, arrhythmia_flags, lf_hf,
+  /// hr_from_ppg, vitals_flags
   Future<String?> exportHRVToCSV({
     required List<HRVPacketData> hrvPackets,
     required String outputFileName,
@@ -243,6 +244,10 @@ class RecordingExportService extends ChangeNotifier {
         sink.writeln('#   hrv_valid: 1 if HRV data is valid, 0 if in learning phase');
         sink.writeln('#   mean_rr_ms: Mean R-R interval from buffer');
         sink.writeln('#   arrhythmia_flags: Bit flags (0x08=bradycardia, 0x10=tachycardia)');
+        sink.writeln('#   lf_hf: LF/HF ratio (empty = not computed by the device)');
+        sink.writeln('#   hr_from_ppg: 1 if heart_rate is a PPG pulse rate, not ECG');
+        sink.writeln('#   vitals_flags: 0x01 HR from PPG, 0x02 ECG lead off, 0x04 PPG weak, 0x08 motion');
+        sink.writeln('#   Empty cells were not reported by the device.');
         sink.writeln('#');
 
         _currentOperation = 'Writing HRV data...';
@@ -252,7 +257,8 @@ class RecordingExportService extends ChangeNotifier {
         // Write CSV header
         sink.writeln(
           'timestamp_ms,heart_rate,rr_interval_ms,sdnn_ms,rmssd_ms,'
-          'pnn50,signal_quality,hrv_valid,mean_rr_ms,arrhythmia_flags'
+          'pnn50,signal_quality,hrv_valid,mean_rr_ms,arrhythmia_flags,'
+          'lf_hf,hr_from_ppg,vitals_flags'
         );
 
         // Write data rows
@@ -261,14 +267,17 @@ class RecordingExportService extends ChangeNotifier {
           sink.writeln(
             '${packet.timestampMs},'
             '${packet.heartRate},'
-            '${packet.rrIntervalMs},'
+            '${packet.rrIntervalMs == 0 ? '' : packet.rrIntervalMs},'
             '${packet.sdnnMs},'
             '${packet.rmssdMs},'
             '${packet.pnn50},'
             '${packet.signalQuality},'
             '${packet.hrvValid ? 1 : 0},'
-            '${packet.meanRrMs},'
-            '${packet.arrhythmiaFlags}'
+            '${packet.meanRrMs == 0 ? '' : packet.meanRrMs},'
+            '${packet.arrhythmiaFlags},'
+            '${packet.lfHf?.toStringAsFixed(1) ?? ''},'
+            '${packet.hrFromPpg ? 1 : 0},'
+            '${packet.vitalsFlags}'
           );
 
           // Update progress periodically

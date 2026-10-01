@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../../controllers/channel_controller.dart';
 import '../../models/recording_models.dart';
 import '../../models/waveform_models.dart';
+import '../../protocol/hp6_formats.dart';
 import '../../services/data_parser.dart';
 import '../../services/eeg_packet_service.dart';
 import '../../services/hrv_packet_service.dart';
@@ -112,6 +113,14 @@ class _VitalsStrip extends StatelessWidget {
     final tempC = simulated ? pump.tempTrend.lastOrNull : data?.temperature;
     final temp = tempC == null ? null : settings.temperature(tempC);
 
+    // The device says which sensor produced the heart rate; a PPG pulse rate is
+    // never presented as an ECG rate.
+    final device = simulated ? null : data;
+    final hrSource = device == null || device.heartRate == 0
+        ? null
+        : (device.hrFromPpg ? 'PPG pulse rate' : 'ECG');
+    final lf = hrv.lfHf;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(
           HpiMetrics.screenPadding, 0, HpiMetrics.screenPadding, 12),
@@ -128,6 +137,9 @@ class _VitalsStrip extends StatelessWidget {
                 tone: p.trace.ecg1,
                 pulse: hr != null && hr > 0,
                 spark: pump.hrTrend,
+                tag: device != null && device.ecgLeadsOff ? 'ECG lead off' : null,
+                tagTone: p.warning,
+                caption: hrSource,
               ),
             ),
             kCardGapH,
@@ -139,6 +151,10 @@ class _VitalsStrip extends StatelessWidget {
                 unit: '%',
                 tone: p.trace.ppg,
                 spark: pump.spo2Trend,
+                tag: device != null && device.ppgWeak ? 'PPG weak' : null,
+                tagTone: p.warning,
+                // Not calibrated on this hardware.
+                caption: simulated ? null : 'uncalibrated',
               ),
             ),
             kCardGapH,
@@ -171,14 +187,14 @@ class _VitalsStrip extends StatelessWidget {
                 value: hrv.sdnn == null ? '—' : '${hrv.sdnn}',
                 unit: 'ms',
                 tone: p.trace.eeg1,
-                tag: hrv.sdnn == null ? null : hrv.latestData?.sdnnLevel,
-                tagTone: p.success,
-                // pNN50 is in the packet but the firmware does not fill it in,
-                // so it is left out rather than reported as a flat 0%. The HRV
-                // screen says so in full.
+                // The device's HRV is not validated, so it gets no
+                // normal/low/high grading here.
+                tag: hrv.sdnn == null ? null : 'unvalidated',
+                tagTone: p.textMuted,
                 caption: hrv.rmssd == null
                     ? 'awaiting HRV packets'
-                    : 'RMSSD ${hrv.rmssd} ms',
+                    : 'RMSSD ${hrv.rmssd} ms'
+                        '${lf == null ? '' : ' · LF/HF ${lf.toStringAsFixed(1)}'}',
               ),
             ),
           ],
@@ -343,6 +359,9 @@ class _Canvas extends StatelessWidget {
     }
     final settings = context.watch<StudioSettings>();
     final eeg = context.watch<EEGPacketService>();
+    // Rebuild only when the ECG lead-off mask changes, not per packet.
+    final ecgLeadOff = context
+        .select<DataParser, int?>((d) => d.currentOpenViewData?.ecgLeadOff);
     final p = context.hpi;
     final entries = channels.entries.toList();
 
@@ -358,7 +377,7 @@ class _Canvas extends StatelessWidget {
               thickness: settings.traceThickness,
               gridDivisions: settings.gridDivisions,
               color: p.trace.forChannel(entries[i].key),
-              leadOff: _leadOff(entries[i].key, eeg),
+              leadOff: _leadOff(entries[i].key, eeg, ecgLeadOff),
               last: i == entries.length - 1,
             ),
           ),
@@ -366,13 +385,16 @@ class _Canvas extends StatelessWidget {
     );
   }
 
-  /// Lead-off is only reported by the device for EEG; nothing is inferred for
-  /// the other modalities.
-  static bool? _leadOff(String channelId, EEGPacketService eeg) {
-    if (eeg.latestData == null) return null;
+  /// Lead-off as the device reports it: per electrode for ECG (a lead is off
+  /// when either of its electrodes is), per channel for EEG. V1 is not
+  /// detected on this board, so lead 3 reports nothing rather than "on".
+  static bool? _leadOff(String channelId, EEGPacketService eeg, int? ecg) {
+    bool any(int mask) => (ecg! & mask) != 0;
     return switch (channelId) {
-      'eeg1' => !eeg.isChannelConnected(0),
-      'eeg2' => !eeg.isChannelConnected(1),
+      'ecg1' when ecg != null => any(Hp6LeadOff.ra | Hp6LeadOff.la),
+      'ecg2' when ecg != null => any(Hp6LeadOff.ra | Hp6LeadOff.ll),
+      'eeg1' when eeg.latestData != null => !eeg.isChannelConnected(0),
+      'eeg2' when eeg.latestData != null => !eeg.isChannelConnected(1),
       _ => null,
     };
   }

@@ -235,8 +235,23 @@ the shell stays the single place chrome is assembled.
 The design is explicit about not overstating what the device reports. Current
 cases, each visible in the UI rather than hidden:
 
-* **HRV `pNN50` and mean R-R** — the firmware's HRV packet carries the fields but
-  reports zero, so the tiles read `not reported by firmware`.
+* **HRV `pNN50`, mean R-R and beat-to-beat R-R** — the `.HP6` VITALS block
+  (format `0x0300`) carries SDNN, RMSSD and LF/HF but no R-R intervals and no
+  pNN50. pNN50 reads `not reported by firmware`, mean R-R reads
+  `— (not reported)`, and the Poincaré plot and tachogram are empty states.
+  They used to plot `60000 / HR`, which drew a heart-rate trend as though it
+  were beat-to-beat variability.
+* **HRV is unvalidated** — device SDNN, RMSSD and LF/HF are shown as reported
+  but without normal/low/high grading, and the Live HRV card is tagged
+  `unvalidated`.
+* **SpO₂ is uncalibrated** on this hardware; the Live card's caption says so.
+* **Heart-rate source** — VITALS `flags` say whether `hr_bpm` came from the ECG
+  QRS detector or the PPG pulse detector. Live captions the card `ECG` or
+  `PPG pulse rate` and the HRV screen labels the rate; a PPG rate is never
+  shown as an ECG rate. ECG lead-off (from the per-sample electrode mask and
+  the VITALS flag) and PPG-weak are tags on the HR and SpO₂ cards, and the
+  Lead I / Lead II rows show lead-off. V1 lead-off is not detected on this
+  board, so the V1 row shows nothing rather than "on".
 * **EEG electrode contact** — the packet reports lead-off per electrode as a
   bitmask, not impedance in kΩ, so the panel reports contact, not a fake kΩ.
   `Impedance check` is present and disabled: no firmware command exists.

@@ -64,8 +64,18 @@ class HRVPacketService extends ChangeNotifier {
   /// Current heart rate in BPM (null if no data)
   int? get heartRate => _latestData?.heartRate;
 
-  /// Current R-R interval in ms (null if no data)
-  int? get rrInterval => _latestData?.rrIntervalMs;
+  /// Current R-R interval in ms (null if not reported — the `.HP6` VITALS
+  /// block carries none)
+  int? get rrInterval {
+    final rr = _latestData?.rrIntervalMs;
+    return rr == null || rr == 0 ? null : rr;
+  }
+
+  /// LF/HF ratio (null if no data or not computed)
+  double? get lfHf => _latestData?.lfHf;
+
+  /// Whether the latest heart rate is a PPG pulse rate rather than ECG
+  bool get hrFromPpg => _latestData?.hrFromPpg ?? false;
 
   /// Current SDNN in ms (null if no data)
   int? get sdnn => _latestData?.sdnnMs;
@@ -146,7 +156,8 @@ class HRVPacketService extends ChangeNotifier {
       _history.removeAt(0);
     }
 
-    // Add R-R interval to Poincaré buffer (only if valid)
+    // Add R-R interval to Poincaré buffer (only if the device reported one;
+    // never derive it from the heart rate)
     if (packet.hrvValid && packet.rrIntervalMs > 0) {
       _rrIntervals.add(packet.rrIntervalMs);
       if (_rrIntervals.length > _maxRRIntervals) {

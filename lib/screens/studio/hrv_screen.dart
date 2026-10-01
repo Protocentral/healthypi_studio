@@ -24,7 +24,6 @@ class HrvScreen extends StatelessWidget {
     final p = context.hpi;
     final hrv = context.watch<HRVPacketService>();
     final pump = context.watch<LiveDataPump>();
-    final beats = hrv.rrIntervals;
     final quality = hrv.signalQuality;
 
     return ScreenBody(
@@ -37,9 +36,8 @@ class HrvScreen extends StatelessWidget {
             : HpiBadge('No data', tone: p.textMuted),
         subtitle: hrv.latestData == null
             ? 'The device streams HRV as its own packet type · nothing received yet'
-            : '${beats.length} R-R intervals · '
-                '${hrv.packetsReceived} packets · '
-                '${quality == null ? "quality unknown" : "signal quality $quality%"}',
+            : '${hrv.packetsReceived} vitals packets · '
+                '${quality == null || quality == 0 ? "quality not reported" : "signal quality $quality%"}',
         action: HpiGhostButton(
           label: 'Reset session',
           icon: Icons.restart_alt,
@@ -67,9 +65,11 @@ class _MetricsColumn extends StatelessWidget {
     final p = context.hpi;
     final data = hrv.latestData;
 
-    // The firmware's HRV packet carries pNN50 and mean R-R, but the current
-    // build reports them as zero. Say so rather than printing a plausible 0.
+    // The device reports SDNN, RMSSD and LF/HF. pNN50 and mean R-R are not on
+    // the wire; say so rather than printing a plausible 0. HRV is not validated
+    // on this hardware, so the tiles carry no normal/low/high grading.
     String metric(int? value) => value == null ? '—' : '$value';
+    final lf = hrv.lfHf;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -81,7 +81,6 @@ class _MetricsColumn extends StatelessWidget {
                 label: 'SDNN',
                 value: metric(hrv.sdnn),
                 unit: 'ms',
-                tag: data?.sdnnLevel,
               ),
             ),
             kCardGapH,
@@ -90,7 +89,6 @@ class _MetricsColumn extends StatelessWidget {
                 label: 'RMSSD',
                 value: metric(hrv.rmssd),
                 unit: 'ms',
-                tag: data?.rmssdLevel,
               ),
             ),
           ],
@@ -100,19 +98,21 @@ class _MetricsColumn extends StatelessWidget {
           children: [
             Expanded(
               child: _MetricTile(
-                label: 'pNN50',
-                value: metric(hrv.pnn50),
-                unit: '%',
-                footnote: hrv.pnn50 == 0 ? 'not reported by firmware' : null,
+                label: 'LF/HF',
+                value: lf == null ? '—' : lf.toStringAsFixed(1),
+                unit: 'ratio',
+                footnote: data != null && lf == null
+                    ? 'not computed by the device yet'
+                    : null,
               ),
             ),
             kCardGapH,
             Expanded(
               child: _MetricTile(
-                label: 'Mean R-R',
-                value: metric(hrv.meanRr),
-                unit: 'ms',
-                footnote: hrv.meanRr == 0 ? 'not reported by firmware' : null,
+                label: 'pNN50',
+                value: '—',
+                unit: '%',
+                footnote: 'not reported by firmware',
               ),
             ),
           ],
@@ -127,11 +127,13 @@ class _MetricsColumn extends StatelessWidget {
                 const HpiLabel('Session'),
                 HpiKeyValue(
                     'Heart rate',
-                    hrv.heartRate == null
+                    hrv.heartRate == null || hrv.heartRate == 0
                         ? '—'
-                        : '${hrv.heartRate} BPM'),
+                        : '${hrv.heartRate} BPM · '
+                            '${hrv.hrFromPpg ? "PPG" : "ECG"}'),
                 HpiKeyValue('Last R-R',
                     hrv.rrInterval == null ? '—' : '${hrv.rrInterval} ms'),
+                HpiKeyValue('Mean R-R', '— (not reported)'),
                 HpiKeyValue('Window', formatClockHms(hrv.historyDuration)),
                 HpiKeyValue('Packets received', '${hrv.packetsReceived}'),
                 HpiKeyValue(
@@ -145,9 +147,10 @@ class _MetricsColumn extends StatelessWidget {
                 ),
                 const HpiRule(margin: EdgeInsets.symmetric(vertical: 2)),
                 HpiNote(
-                  'Metrics are computed on the device and streamed as HRV '
-                  'packets — Studio does not derive them. Research use only, '
-                  'not a diagnostic measure.',
+                  'Metrics are computed on the device and streamed in its '
+                  'vitals packets — Studio does not derive them. Device HRV is '
+                  'not yet validated. Research use only, not a diagnostic '
+                  'measure.',
                 ),
                 if (pump.isSimulated)
                   HpiNote(
@@ -177,25 +180,17 @@ class _MetricTile extends StatelessWidget {
     required this.label,
     required this.value,
     required this.unit,
-    this.tag,
     this.footnote,
   });
 
   final String label;
   final String value;
   final String unit;
-  final String? tag;
   final String? footnote;
 
   @override
   Widget build(BuildContext context) {
     final p = context.hpi;
-    final tone = switch (tag?.toLowerCase()) {
-      'normal' => p.success,
-      'low' || 'high' => p.warning,
-      'very low' => p.error,
-      _ => p.textMuted,
-    };
     return HpiTile(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -211,10 +206,7 @@ class _MetricTile extends StatelessWidget {
               Text(unit.toUpperCase(), style: HpiText.unit(p)),
             ],
           ),
-          if (tag != null) ...[
-            const SizedBox(height: 8),
-            HpiTag(tag!, tone: tone),
-          ] else if (footnote != null) ...[
+          if (footnote != null) ...[
             const SizedBox(height: 8),
             HpiNote(footnote!),
           ],
@@ -242,7 +234,16 @@ class _PlotsCard extends StatelessWidget {
           HpiSectionTitle('Poincaré', note: 'RRn vs RRn+1'),
           const SizedBox(height: 10),
           Expanded(
-            child: HpiPoincarePlot(intervals: beats, color: p.trace.eeg1),
+            child: beats.isEmpty
+                ? HpiWell(
+                    child: Center(
+                      child: HpiNote(
+                        'The device does not report beat-to-beat R-R '
+                        'intervals, so there is nothing to plot.',
+                      ),
+                    ),
+                  )
+                : HpiPoincarePlot(intervals: beats, color: p.trace.eeg1),
           ),
           const SizedBox(height: 8),
           Row(
@@ -276,7 +277,9 @@ class _PlotsCard extends StatelessWidget {
             child: beats.length < 2
                 ? HpiWell(
                     child: Center(
-                      child: HpiNote('Waiting for R-R intervals'),
+                      child: HpiNote(beats.isEmpty
+                          ? 'R-R intervals not reported by the device'
+                          : 'Waiting for R-R intervals'),
                     ),
                   )
                 : HpiPlotWell(

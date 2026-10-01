@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
 
+import '../protocol/hp6_formats.dart';
+
 /// OpenView packet constants - Dynamic packet structure with length autodetection
 ///
 /// Supports two protocol versions:
@@ -155,6 +157,13 @@ class OpenViewData {
   final int adcChannel1; // INP14/PA2
   final int adcChannel2; // INP15/PA3
 
+  /// `hp6_vitals.flags` from the last VITALS block (`Hp6VitalsFlag`). 0 when
+  /// the source does not report it.
+  final int vitalsFlags;
+
+  /// `hp6_ecg_sample.lead_off` for this sample (`Hp6LeadOff` electrode mask).
+  final int ecgLeadOff;
+
   final DateTime timestamp;
 
   OpenViewData({
@@ -174,8 +183,20 @@ class OpenViewData {
     required this.temperature,
     required this.adcChannel1,
     required this.adcChannel2,
+    this.vitalsFlags = 0,
+    this.ecgLeadOff = 0,
     DateTime? timestamp,
   }) : timestamp = timestamp ?? DateTime.now();
+
+  /// The heart rate is a PPG pulse rate, not an ECG rate.
+  bool get hrFromPpg => (vitalsFlags & Hp6VitalsFlag.hrFromPpg) != 0;
+
+  /// At least one ECG electrode is off; the device gates the ECG heart rate.
+  bool get ecgLeadsOff =>
+      (vitalsFlags & Hp6VitalsFlag.ecgLeadOff) != 0 || ecgLeadOff != 0;
+
+  /// Low PPG perfusion or finger off: SpO₂ and a PPG heart rate are provisional.
+  bool get ppgWeak => (vitalsFlags & Hp6VitalsFlag.ppgWeak) != 0;
 
   /// Whether this packet has a valid sequence number (v2 only)
   bool get hasSequenceNumber => protocolVersion >= 2;
@@ -213,10 +234,12 @@ class HRVPacketData {
   /// Device uptime in milliseconds when HRV metrics were calculated
   final int timestampMs;
 
-  /// ECG-derived heart rate in BPM (more accurate than PPG-derived)
+  /// Heart rate in BPM. Check [hrFromPpg]: the device may report a PPG pulse
+  /// rate here, and that must not be presented as an ECG rate.
   final int heartRate;
 
-  /// Most recent R-R interval in milliseconds (typical range: 300-2000 ms)
+  /// Most recent R-R interval in milliseconds. 0 = not reported; the `.HP6`
+  /// VITALS block carries no beat-to-beat intervals.
   final int rrIntervalMs;
 
   /// Standard Deviation of NN intervals in milliseconds
@@ -246,6 +269,12 @@ class HRVPacketData {
   /// Mean R-R interval in milliseconds (from RR buffer, up to 64 samples)
   final int meanRrMs;
 
+  /// LF/HF ratio × 10. 0 = not computed.
+  final int lfHfX10;
+
+  /// `hp6_vitals.flags` (`Hp6VitalsFlag`).
+  final int vitalsFlags;
+
   /// Local timestamp when packet was received
   final DateTime timestamp;
 
@@ -261,8 +290,18 @@ class HRVPacketData {
     required this.hrvValid,
     required this.arrhythmiaFlags,
     required this.meanRrMs,
+    this.lfHfX10 = 0,
+    this.vitalsFlags = 0,
     DateTime? timestamp,
   }) : timestamp = timestamp ?? DateTime.now();
+
+  /// LF/HF ratio, or null when the device has not computed it.
+  double? get lfHf => lfHfX10 == 0 ? null : lfHfX10 / 10.0;
+
+  bool get hrFromPpg => (vitalsFlags & Hp6VitalsFlag.hrFromPpg) != 0;
+  bool get ecgLeadOff => (vitalsFlags & Hp6VitalsFlag.ecgLeadOff) != 0;
+  bool get ppgWeak => (vitalsFlags & Hp6VitalsFlag.ppgWeak) != 0;
+  bool get motion => (vitalsFlags & Hp6VitalsFlag.motion) != 0;
 
   /// Returns true if bradycardia (HR < 60 BPM) is detected
   bool get bradycardia => (arrhythmiaFlags & 0x08) != 0;
@@ -311,6 +350,35 @@ class HRVPacketData {
            'SDNN: $sdnnMs ms, RMSSD: $rmssdMs ms, pNN50: $pnn50%, '
            'Quality: $signalQuality%$arrhythmiaStr)';
   }
+}
+
+/// One classified beat from a HealthyLink compute module (DBLK channel 8,
+/// `hp6_infer_sample`). Samples flagged `Hp6InferFlag.stub` are dropped by the
+/// parser and never reach this type.
+class InferSample {
+  /// Device uptime in ms (not session-relative).
+  final int tsMs;
+  final int modelId;
+
+  /// AAMI class: 0 N, 1 S, 2 V, 3 F, 4 Q.
+  final int classId;
+
+  /// 0..255, the winning score rescaled.
+  final int confidence;
+  final List<int> scores;
+  final int flags;
+
+  const InferSample({
+    required this.tsMs,
+    required this.modelId,
+    required this.classId,
+    required this.confidence,
+    required this.scores,
+    required this.flags,
+  });
+
+  bool get lowConfidence => (flags & Hp6InferFlag.lowConf) != 0;
+  bool get ecgSuspect => (flags & Hp6InferFlag.ecgSuspect) != 0;
 }
 
 /// EEG packet data from HealthyPi (51-byte packets at 250 Hz)
@@ -431,6 +499,14 @@ class DataParser extends ChangeNotifier {
   Stream<EEGPacketData> get eegStream => _eegStreamController.stream;
   EEGPacketData? _currentEegData;
   int _eegPacketsReceived = 0;
+
+  // Beat classifications from a HealthyLink compute module (DBLK channel 8).
+  // Stub inferences are dropped before they reach this stream.
+  final _inferStreamController = StreamController<InferSample>.broadcast();
+  Stream<InferSample> get inferStream => _inferStreamController.stream;
+  int _inferSamplesReceived = 0;
+  int _inferStubsDropped = 0;
+  int _eventsReceived = 0;
   int? _lastEegSequenceNumber;
   int _eegSequenceGaps = 0;
   int _eegMissingBySequence = 0;
@@ -486,6 +562,9 @@ class DataParser extends ChangeNotifier {
   int get packetsDropped => _packetsDropped;
   int get hrvPacketsReceived => _hrvPacketsReceived;
   int get eegPacketsReceived => _eegPacketsReceived;
+  int get inferSamplesReceived => _inferSamplesReceived;
+  int get inferStubsDropped => _inferStubsDropped;
+  int get eventsReceived => _eventsReceived;
   double get packetsPerSecond => _packetsPerSecond;
 
   // EEG sequence tracking getters
@@ -687,9 +766,12 @@ class DataParser extends ChangeNotifier {
   // DBLK block (little-endian, see firmware services/hp6_frame.h):
   //   0  4  magic "DBLK"        4   4  block_len (whole frame incl. crc)
   //   8  4  seq                 12  8  t_ms (device monotonic ms)
-  //   20 1  channel (1=ECG,2=PPG,4=VITALS,5=EEG)
+  //   20 1  channel (Hp6Channel)
   //   21 1  flags               22  2  sample_count   24 4 reserved
   //   28 N  samples (canonical structs)   28+N 4 crc32 (zlib/IEEE)
+  // Format 0x0300. The sample size is derived from block_len / sample_count
+  // and must equal the channel's struct size (hp6SampleSize), so a layout
+  // change on the device shows up as dropped blocks, not misread fields.
   // ECG/PPG/VITALS arrive in separate batched blocks; we hold last-known
   // PPG + vitals and emit one OpenViewData per ECG sample so every existing
   // consumer (consumePackets / packetStream / screens) keeps working.
@@ -703,6 +785,7 @@ class DataParser extends ChangeNotifier {
   int _lastSpo2 = 0;
   int _lastRr = 0;
   double _lastTemp = 0.0;
+  int _lastVitalsFlags = 0;
   int _lastStreamSeq = -1;
 
   // PPG real-sample FIFO. PPG (250 Hz) arrives in 16-sample blocks; ECG is
@@ -718,8 +801,8 @@ class DataParser extends ChangeNotifier {
   static const int _dblkMagic1 = 0x42; // 'B'
   static const int _dblkMagic2 = 0x4C; // 'L'
   static const int _dblkMagic3 = 0x4B; // 'K'
-  static const int _dblkHdrLen = 28;
-  static const int _dblkCrcLen = 4;
+  static const int _dblkHdrLen = dblkHeaderLen;
+  static const int _dblkCrcLen = dblkCrcLen;
 
   void _drainDblkBlocks() {
     bool produced = false;
@@ -764,7 +847,12 @@ class DataParser extends ChangeNotifier {
         continue;
       }
       try {
-        produced = _decodeDblk(block) || produced;
+        final result = _decodeDblk(block);
+        if (result == null) {
+          _packetsDropped++;
+        } else {
+          produced = result || produced;
+        }
       } catch (e) {
         debugPrint('❌ DBLK decode error: $e');
         _packetsDropped++;
@@ -782,12 +870,14 @@ class DataParser extends ChangeNotifier {
   }
 
   /// Decode one validated DBLK block. Returns true if it produced waveform/vital
-  /// data worth a UI notification.
-  bool _decodeDblk(List<int> b) {
+  /// data worth a UI notification, false for a block that is valid but not
+  /// shown, and null for a block whose layout does not match format 0x0300.
+  bool? _decodeDblk(List<int> b) {
     final seq = _readUint32LE(b, 8);
     final channel = b[20];
     final sampleCount = _readUint16LE(b, 22);
-    const payloadOff = 28;
+    const payloadOff = _dblkHdrLen;
+    final payloadLen = b.length - _dblkHdrLen - _dblkCrcLen;
 
     if (_lastStreamSeq >= 0 && seq != ((_lastStreamSeq + 1) & 0xFFFFFFFF)) {
       _sequenceGaps++;
@@ -795,10 +885,19 @@ class DataParser extends ChangeNotifier {
     _lastStreamSeq = seq;
     _currentProtocolVersion = 2;
 
+    final expected = hp6SampleSize[channel];
+    if (expected == null) return false; // unknown channel: skip, not an error
+    if (sampleCount == 0) return false;
+    if (payloadLen % sampleCount != 0 || payloadLen ~/ sampleCount != expected) {
+      debugPrint('⚠️ DBLK ch$channel: $payloadLen B for $sampleCount samples, '
+          'expected $expected B each — dropped');
+      return null;
+    }
+
     switch (channel) {
-      case 1: // ECG: 20 B/sample {resp,leadI,leadII,v1 (i32), lead_off,flags,pad}
+      case Hp6Channel.ecg: // {resp,leadI,leadII,v1 (i32), lead_off,flags,pad}
         for (int s = 0; s < sampleCount; s++) {
-          final o = payloadOff + s * 20;
+          final o = payloadOff + s * expected;
           // Advance the PPG FIFO at the 2:1 ECG:PPG rate so each ECG sample
           // carries a real, distinct PPG sample (fixes the stepped PPG).
           _ecgPpgPhase++;
@@ -827,6 +926,8 @@ class DataParser extends ChangeNotifier {
             temperature: _lastTemp,
             adcChannel1: 0,
             adcChannel2: 0,
+            vitalsFlags: _lastVitalsFlags,
+            ecgLeadOff: b[o + 16],
           );
           _currentOpenViewData = ov;
           _currentData = ov.toHealthyPiData();
@@ -835,11 +936,11 @@ class DataParser extends ChangeNotifier {
           _packetsReceived++;
         }
         _updatePacketRate();
-        return sampleCount > 0;
+        return true;
 
-      case 2: // PPG: 12 B/sample {red,ir (i32), lead_off, pad[3]}
+      case Hp6Channel.ppg: // {red,ir (i32), lead_off, pad[3]}
         for (int s = 0; s < sampleCount; s++) {
-          final o = payloadOff + s * 12;
+          final o = payloadOff + s * expected;
           _ppgFifoRed.add(_readInt32LE(b, o + 0));
           _ppgFifoIr.add(_readInt32LE(b, o + 4));
         }
@@ -851,37 +952,40 @@ class DataParser extends ChangeNotifier {
         }
         return false; // consumed by the ECG cadence at 2:1
 
-      case 4: // VITALS: 12 B {hr,spo2x10,rr (u16), temp (i16), sdnn,rmssd (u8), pad}
-        final o = payloadOff;
-        final hr = _readUint16LE(b, o + 0);
-        final spo2x10 = _readUint16LE(b, o + 2);
-        final rr = _readUint16LE(b, o + 4);
-        final tempX100 = _readInt16LE(b, o + 6);
-        final sdnn = b[o + 8];
-        final rmssd = b[o + 9];
-        _lastHr = hr;
-        _lastSpo2 = (spo2x10 / 10).round();
-        _lastRr = rr;
-        _lastTemp = tempX100 / 100.0;
-        final hrv = HRVPacketData(
-          rawPayload: const [],
-          timestampMs: _readUint32LE(b, 12), // low 32 bits of t_ms
-          heartRate: hr,
-          rrIntervalMs: hr > 0 ? (60000 / hr).round() : 0,
-          sdnnMs: sdnn,
-          rmssdMs: rmssd,
-          pnn50: 0,
-          signalQuality: 0,
-          hrvValid: hr > 0,
-          arrhythmiaFlags: 0,
-          meanRrMs: 0,
-        );
-        _currentHrvData = hrv;
-        _hrvStreamController.add(hrv);
-        _hrvPacketsReceived++;
+      case Hp6Channel.vitals:
+        // 16 B: {hr, spo2_x10, rr (u16), temp_x100 (i16), sdnn, rmssd,
+        // lf_hf_x10 (u16), flags (u8), pad}
+        for (int s = 0; s < sampleCount; s++) {
+          final o = payloadOff + s * expected;
+          final hr = _readUint16LE(b, o + 0);
+          final flags = b[o + 14];
+          _lastHr = hr;
+          _lastSpo2 = (_readUint16LE(b, o + 2) / 10).round();
+          _lastRr = _readUint16LE(b, o + 4);
+          _lastTemp = _readInt16LE(b, o + 6) / 100.0;
+          _lastVitalsFlags = flags;
+          final hrv = HRVPacketData(
+            rawPayload: const [],
+            timestampMs: _readUint32LE(b, 12), // low 32 bits of t_ms
+            heartRate: hr,
+            rrIntervalMs: 0, // not on the wire; never synthesize from HR
+            sdnnMs: _readUint16LE(b, o + 8),
+            rmssdMs: _readUint16LE(b, o + 10),
+            pnn50: 0,
+            signalQuality: 0,
+            hrvValid: hr > 0,
+            arrhythmiaFlags: 0,
+            meanRrMs: 0,
+            lfHfX10: _readUint16LE(b, o + 12),
+            vitalsFlags: flags,
+          );
+          _currentHrvData = hrv;
+          _hrvStreamController.add(hrv);
+          _hrvPacketsReceived++;
+        }
         return true;
 
-      case 5: // EEG: 36 B/sample {ch[8] (i32, microvolts), lead_off, pad[3]}
+      case Hp6Channel.eeg: // {ch[8] (i32, microvolts), lead_off, pad[3]}
         // HealthyLink EEG module (ADS1299, 8 channels, 250 Hz, batched 16
         // samples per block by the firmware's mod_eeg.c). The device publishes
         // this only when the module is attached and CONFIG_SENSOR_ADS1299 is
@@ -889,19 +993,17 @@ class DataParser extends ChangeNotifier {
         // an error.
         //
         // The firmware sends one lead_off byte per sample and does not
-        // distinguish positive from negative electrodes (mod_eeg.c currently
-        // fills it from nothing pending LOFF_STAT support), so the same mask is
+        // distinguish positive from negative electrodes, so the same mask is
         // reported for both and isChannelConnected() stays correct.
         for (int s = 0; s < sampleCount; s++) {
-          final o = payloadOff + s * 36;
-          if (o + 36 > b.length) break;
+          final o = payloadOff + s * expected;
           final ch = <int>[
             for (int c = 0; c < 8; c++) _readInt32LE(b, o + c * 4),
           ];
           final leadOff = b[o + 32];
           final eeg = EEGPacketData(
             rawPayload: const [],
-            sequenceNumber: _readUint32LE(b, 8),
+            sequenceNumber: seq,
             timestampMs: _readUint32LE(b, 12), // low 32 bits of t_ms
             channels: ch,
             leadOffPositive: leadOff,
@@ -915,7 +1017,32 @@ class DataParser extends ChangeNotifier {
         }
         return true;
 
-      default: // other channels ignored
+      case Hp6Channel.infer: // {ts_ms u32, model u16, class u8, conf u8,
+        // scores i8[5], flags u8, pad[2]}
+        for (int s = 0; s < sampleCount; s++) {
+          final o = payloadOff + s * expected;
+          final flags = b[o + 13];
+          if ((flags & Hp6InferFlag.stub) != 0) {
+            _inferStubsDropped++;
+            continue;
+          }
+          _inferStreamController.add(InferSample(
+            tsMs: _readUint32LE(b, o),
+            modelId: _readUint16LE(b, o + 4),
+            classId: b[o + 6],
+            confidence: b[o + 7],
+            scores: [for (int k = 0; k < 5; k++) b[o + 8 + k].toSigned(8)],
+            flags: flags,
+          ));
+          _inferSamplesReceived++;
+        }
+        return false;
+
+      case Hp6Channel.event: // {ts_ms u32, type u16, seq u16}: counted only
+        _eventsReceived += sampleCount;
+        return false;
+
+      default: // SYNC is file-only; nothing to show live
         return false;
     }
   }
@@ -1149,6 +1276,11 @@ class DataParser extends ChangeNotifier {
     _lastEegSequenceNumber = null;
     _eegSequenceGaps = 0;
     _eegMissingBySequence = 0;
+    _inferSamplesReceived = 0;
+    _inferStubsDropped = 0;
+    _eventsReceived = 0;
+    _lastStreamSeq = -1;
+    _lastVitalsFlags = 0;
   }
 
   void clear() {
@@ -1163,6 +1295,7 @@ class DataParser extends ChangeNotifier {
     _packetStreamController.close();
     _hrvStreamController.close();
     _eegStreamController.close();
+    _inferStreamController.close();
     super.dispose();
   }
 }

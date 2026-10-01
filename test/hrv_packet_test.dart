@@ -299,8 +299,6 @@ void main() {
     });
   });
 
-  // The 'DataParser HRV parsing' group was deleted on 2026-08-31 for the same
-  // reason as the EEG group: it exercised the retired OpenView framing. HRV
-  // itself is live — _drainDblkBlocks() emits it — so this needs re-covering
-  // against DBLK rather than restoring. The constants below still hold.
+  // HRV decoding through parseBinaryData() is covered against the live DBLK
+  // VITALS layout (channel 4, format 0x0300) in dblk_decode_test.dart.
 }

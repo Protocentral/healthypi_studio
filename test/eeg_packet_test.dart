@@ -181,12 +181,8 @@ void main() {
     });
   });
 
-  // The 'DataParser EEG parsing' group was deleted on 2026-08-31. It fed
-  // OpenView-framed EEG packets to parseBinaryData(), a path that has been
-  // unreachable since the 2026-06-08 .HP6 DBLK migration, so every test in it
-  // asserted behaviour the app no longer has. DBLK does not carry EEG yet;
-  // when it does, write the tests against that framing. The packet-layout
-  // constants below still hold and are still checked.
+  // EEG decoding through parseBinaryData() is covered against the live DBLK
+  // framing (channel 5) in dblk_decode_test.dart.
 }
 
 /// Helper: Convert uint32 to little-endian bytes
