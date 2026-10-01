@@ -6,6 +6,8 @@ import 'package:mcumgr_dart/mcumgr_dart.dart' show McuImageInfo;
 
 import 'firmware/bundle.dart';
 import 'firmware/firmware_updater.dart';
+import 'firmware/recovery.dart';
+import 'smp_serial_client.dart';
 import 'usb_serial_service.dart';
 
 /// What the user picked to install.
@@ -37,7 +39,9 @@ class FirmwareUpdateService extends ChangeNotifier {
   UpdateProgress _progress = const UpdateProgress(UpdateStage.idle, 0, 0);
   final List<String> _log = [];
   UpdateOutcome? _outcome;
+  RecoveryOutcome? _recovered;
   String? _error;
+  String? _notice;
 
   FirmwareSource get source => _source;
   String? get path => _path;
@@ -48,7 +52,19 @@ class FirmwareUpdateService extends ChangeNotifier {
   UpdateProgress get progress => _progress;
   List<String> get log => List.unmodifiable(_log);
   UpdateOutcome? get outcome => _outcome;
+  RecoveryOutcome? get recovered => _recovered;
   String? get error => _error;
+
+  /// A non-error status line (e.g. "rebooting into recovery").
+  String? get notice => _notice;
+
+  /// The M7 image a recovery would write: the bundle's, or the raw image.
+  Uint8List? get _m7Image =>
+      _source == FirmwareSource.bundle ? _bundle!.images['m7']?.data : _rawImage;
+  String? get _m7Version => _source == FirmwareSource.bundle
+      ? _bundle!.images['m7']?.version
+      : _rawVersion;
+  bool get canRecover => !_busy && _m7Image != null;
   bool get canInstall =>
       !_busy && _usb.controlConnected && _source != FirmwareSource.none;
 
@@ -100,20 +116,12 @@ class FirmwareUpdateService extends ChangeNotifier {
 
   Future<void> install() async {
     if (!canInstall) return;
-    _busy = true;
-    _log.clear();
-    _outcome = null;
-    _error = null;
-    notifyListeners();
+    _begin();
 
     final updater = FirmwareUpdater(
       client: () => _usb.control,
       resetAndReconnect: _resetAndReconnect,
-      log: (line) {
-        debugPrint('🔄 fw: $line');
-        _log.add(line);
-        notifyListeners();
-      },
+      log: _logLine,
       onProgress: (p) {
         _progress = p;
         notifyListeners();
@@ -128,6 +136,101 @@ class FirmwareUpdateService extends ChangeNotifier {
       _progress = const UpdateProgress(UpdateStage.failed, 0, 0);
     } catch (e) {
       _error = 'Update error: $e';
+      _progress = const UpdateProgress(UpdateStage.failed, 0, 0);
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  void _begin() {
+    _busy = true;
+    _log.clear();
+    _outcome = null;
+    _recovered = null;
+    _error = null;
+    _notice = null;
+    notifyListeners();
+  }
+
+  void _logLine(String line) {
+    debugPrint('🔄 fw: $line');
+    _log.add(line);
+    notifyListeners();
+  }
+
+  /// Reboot the connected unit into MCUboot serial recovery, then look for
+  /// the recovery port it re-enumerates as.
+  Future<void> enterRecovery() async {
+    if (_busy || !_usb.controlConnected) return;
+    _begin();
+    try {
+      final why = await FirmwareRecovery.enterRecovery(_usb.control);
+      if (why != null) {
+        _error = why;
+        return;
+      }
+      _notice = 'Rebooting into recovery…';
+      notifyListeners();
+      await _usb.disconnect();
+      final deadline = DateTime.now().add(const Duration(seconds: 20));
+      while (DateTime.now().isBefore(deadline)) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        await _usb.refreshDevices();
+        if (_usb.recoveryPorts.isNotEmpty) {
+          _notice = 'The unit is in recovery mode on '
+              '${_usb.recoveryPorts.first.portName}.';
+          return;
+        }
+      }
+      _notice = 'Recovery armed. The unit should re-enumerate as '
+          '"HealthyPi 6 Recovery"; rescan if it is not listed.';
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Write the selected M7 to the unit in recovery on [port], then confirm the
+  /// application comes back running it.
+  Future<void> recover(String port) async {
+    final m7 = _m7Image;
+    if (!canRecover || m7 == null) return;
+    _begin();
+    final recovery = FirmwareRecovery(
+      openClient: (p) async {
+        final c = SmpSerialClient();
+        return c.open(p) ? c : null;
+      },
+      applicationPorts: () async {
+        await _usb.refreshDevices();
+        final hp = [
+          for (final d in _usb.healthyPiDevices)
+            for (final i in d) i.portName,
+        ]..sort((a, b) => b.compareTo(a)); // CDC1 is usually the higher one
+        return hp.isNotEmpty
+            ? hp
+            : _usb.availablePorts.where((p) => !p.startsWith('/dev/tty.')).toList();
+      },
+      log: _logLine,
+      onProgress: (sent, total) {
+        _progress = UpdateProgress(UpdateStage.uploadingM7, sent, total);
+        notifyListeners();
+      },
+    );
+    try {
+      _recovered = await recovery.recover(
+        recoveryPort: port,
+        m7: m7,
+        m7Version: _m7Version ?? '?',
+        m4Version: _bundle?.images['m4']?.version,
+      );
+      _progress = const UpdateProgress(UpdateStage.done, 0, 0);
+    } on UpdateException catch (e) {
+      _error = e.message;
+      _progress = const UpdateProgress(UpdateStage.failed, 0, 0);
+    } catch (e) {
+      _error = 'Recovery error: $e';
       _progress = const UpdateProgress(UpdateStage.failed, 0, 0);
     } finally {
       _busy = false;

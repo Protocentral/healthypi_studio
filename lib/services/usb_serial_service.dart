@@ -133,42 +133,52 @@ class UsbSerialService extends ChangeNotifier {
       'packetsDropped': _dataParser?.packetsDropped ?? 0,
     };
   }
+  /// USB identity of [portName], read from its descriptors without opening it.
+  ///
+  /// Reading descriptors can fail on some hosts (macOS reported "Operation not
+  /// permitted" in the past); the port is then listed by name alone and
+  /// HealthyPi detection falls back to probing the protocol.
   UsbDeviceInfo getPortInfo(String portName) {
+    final cached = _portInfo[portName];
+    if (cached != null) return cached;
+    int vid = 0, pid = 0;
+    String? manufacturer, product, serial;
+    SerialPort? port;
     try {
-      // IMPORTANT: Don't access port properties without opening
-      // On macOS, accessing vendorId, productId, etc. on unopened ports
-      // requires special permissions and can fail with "Operation not permitted"
-      // Instead, we just use basic port info without needing to open it
-      
-      String displayName = portName;
-      
-      // Return basic info without accessing closed port properties
-      // Only use port name to avoid permission issues
-      return UsbDeviceInfo(
-        portName: portName,
-        manufacturerName: null,
-        productDescription: null,
-        serialNumber: null,
-        vendorId: 0,
-        productId: 0,
-        isHealthyPi: false,
-        displayName: displayName,
-      );
+      port = SerialPort(portName);
+      if (port.transport == SerialPortTransport.usb) {
+        vid = port.vendorId ?? 0;
+        pid = port.productId ?? 0;
+        manufacturer = port.manufacturer;
+        product = port.productName;
+        serial = port.serialNumber;
+      }
     } catch (e) {
-      debugPrint('Error getting port info for $portName: $e');
-      return UsbDeviceInfo(
-        portName: portName,
-        manufacturerName: null,
-        productDescription: 'Unknown Device',
-        serialNumber: null,
-        vendorId: 0,
-        productId: 0,
-        isHealthyPi: false,
-        displayName: portName,
-      );
+      debugPrint('⚠️ USB descriptors unavailable for $portName: $e');
+    } finally {
+      port?.dispose();
     }
+    final info = UsbDeviceInfo(
+      portName: portName,
+      manufacturerName: manufacturer,
+      productDescription: product,
+      serialNumber: serial,
+      vendorId: vid,
+      productId: pid,
+      isHealthyPi: HealthyPiUsb.isHealthyPi6(vid, pid),
+      displayName: UsbDeviceDetector.classifyDeviceType(vid, pid, product),
+    );
+    _portInfo[portName] = info;
+    return info;
   }
-  
+
+  // Descriptors per port, refreshed with the port list.
+  final Map<String, UsbDeviceInfo> _portInfo = {};
+
+  /// HealthyPi 6 units currently in MCUboot serial recovery.
+  List<UsbDeviceInfo> get recoveryPorts =>
+      getAllPortsInfo().where((i) => i.isRecovery).toList();
+
   /// Get all ports with their information
   List<UsbDeviceInfo> getAllPortsInfo() {
     final infos = <UsbDeviceInfo>[];
@@ -190,6 +200,7 @@ class UsbSerialService extends ChangeNotifier {
       }
       
       _availablePorts = ports;
+      _portInfo.clear();
       debugPrint('Found ${_availablePorts.length} serial ports: $_availablePorts');
       notifyListeners();
     } catch (e) {
@@ -245,6 +256,12 @@ class UsbSerialService extends ChangeNotifier {
   
   /// Connect to a serial port
   Future<bool> connect(String portName, {int baudRate = 921600}) async {
+    if (getPortInfo(portName).isRecovery) {
+      // MCUboot serial recovery has no sample stream; opening it as one would
+      // only feed SMP bytes to the parser. Recovery is driven from Device.
+      debugPrint('⚠️ $portName is a HealthyPi 6 in recovery mode, not a data port');
+      return false;
+    }
     try {
       // Ensure any previous connection is cleaned up
       if (_port != null) {
@@ -318,7 +335,7 @@ class UsbSerialService extends ChangeNotifier {
 
       // Open the CDC 1 control sibling and explicitly start the stream
       // (ECG+PPG). Best-effort; the device auto-streams on CDC 0 open anyway.
-      _openControlAndStart(actualPortName);
+      unawaited(_openControlAndStart(actualPortName));
 
       debugPrint('✅ Connected to $actualPortName at $baudRate baud');
       notifyListeners();
@@ -395,6 +412,7 @@ class UsbSerialService extends ChangeNotifier {
       // User-initiated disconnect - cancel any pending reconnection
       _cancelReconnectTimer();
       _lastConnectedPortName = null;
+      _knownControlPort = null;
     }
     
     try {
@@ -434,42 +452,115 @@ class UsbSerialService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Find the CDC 1 control sibling of the just-opened CDC 0 data port, open it,
-  /// and send stream_start. The two HealthyPi CDC ACM interfaces enumerate as a
-  /// pair sharing a long common prefix (macOS …1/…3, Linux ttyACM0/ttyACM1,
-  /// Windows sequential COMn); we pick the available port with the longest
-  /// common prefix that isn't the data port. All best-effort.
-  void _openControlAndStart(String dataPort) {
+  /// HealthyPi 6 units (in application mode), each as its group of CDC ports.
+  /// Ports are grouped by USB serial number when the host reports one.
+  List<List<UsbDeviceInfo>> get healthyPiDevices {
+    final groups = <String, List<UsbDeviceInfo>>{};
+    for (final i in getAllPortsInfo()) {
+      if (!i.isHealthyPi || i.isRecovery) continue;
+      final key = '${i.vendorId}:${i.serialNumber ?? '?'}';
+      groups.putIfAbsent(key, () => []).add(i);
+    }
+    return groups.values.toList();
+  }
+
+  /// Ask [port] for an SMP echo, then close it. True for CDC1 or a recovery
+  /// port; CDC0 never answers.
+  static Future<bool> probeSmp(String port) async {
+    final probe = SmpSerialClient();
     try {
-      final candidates = SerialPort.availablePorts
-          .where((p) => p != dataPort)
+      if (!probe.open(port)) return false;
+      return await probe.echo();
+    } finally {
+      probe.close();
+    }
+  }
+
+  // The control port found for the current device, kept for reconnects.
+  String? _knownControlPort;
+
+  /// Connect to a HealthyPi 6 given all of its CDC ports: the port that
+  /// answers SMP is the control port, and the other carries data. Works out
+  /// the roles from the protocol, so it does not matter which port the OS
+  /// numbered first.
+  Future<bool> connectDevice(List<String> ports) async {
+    String? control;
+    for (final p in [...ports]..sort((a, b) => b.compareTo(a))) {
+      if (await probeSmp(p)) {
+        control = p;
+        break;
+      }
+    }
+    final data = ports.firstWhere((p) => p != control, orElse: () => ports.first);
+    if (control == null) {
+      debugPrint('⚠️ No port of this device answered SMP; connecting $data '
+          'without a control port');
+    }
+    _knownControlPort = control;
+    return connect(data);
+  }
+
+  /// Open the CDC 1 control port that belongs with the CDC 0 data port
+  /// [dataPort], then send stream_start.
+  ///
+  /// The control port is the one that answers SMP. Candidates are the data
+  /// port's USB siblings (same VID and serial number); without USB ids, the
+  /// two ports sharing the longest name prefix with it (macOS …1/…3, Linux
+  /// ttyACM0/1, Windows sequential COMn). Best-effort: the device streams on
+  /// CDC 0 even with no control port.
+  Future<void> _openControlAndStart(String dataPort) async {
+    try {
+      final data = getPortInfo(dataPort);
+      var candidates = SerialPort.availablePorts
+          .where((p) => p != dataPort && !p.startsWith('/dev/tty.'))
           .toList();
-      if (candidates.isEmpty) {
-        debugPrint('ℹ️ No control-port sibling found; relying on device auto-stream');
+      final known = _knownControlPort;
+      if (known != null && candidates.contains(known)) {
+        candidates = [known];
+      } else if (data.isHealthyPi) {
+        candidates = candidates.where((p) {
+          final i = getPortInfo(p);
+          return i.vendorId == data.vendorId &&
+              !i.isRecovery &&
+              (data.serialNumber == null || i.serialNumber == data.serialNumber);
+        }).toList();
+      } else {
+        int commonLen(String a, String b) {
+          final n = a.length < b.length ? a.length : b.length;
+          int i = 0;
+          while (i < n && a[i] == b[i]) {
+            i++;
+          }
+          return i;
+        }
+
+        candidates.sort((a, b) =>
+            commonLen(b, dataPort).compareTo(commonLen(a, dataPort)));
+        candidates = candidates.take(2).toList();
+      }
+
+      for (final port in candidates) {
+        if (!_control.open(port)) continue;
+        if (await _control.echo()) {
+          _controlPortName = port;
+          _knownControlPort = port;
+          break;
+        }
+        _control.close();
+      }
+      if (_controlPortName == null) {
+        debugPrint('ℹ️ No control port answered SMP; relying on device auto-stream');
+        notifyListeners();
         return;
       }
-      int commonLen(String a, String b) {
-        final n = a.length < b.length ? a.length : b.length;
-        int i = 0;
-        while (i < n && a[i] == b[i]) {
-          i++;
-        }
-        return i;
-      }
-      candidates.sort((a, b) => commonLen(b, dataPort).compareTo(commonLen(a, dataPort)));
-      final controlPort = candidates.first;
-      if (_control.open(controlPort)) {
-        _controlPortName = controlPort;
-        if (autoStartStreaming) {
-          unawaited(_startStream());
-        } else {
-          debugPrint(
-              'ℹ️ Control pipe $controlPort open; auto-start off, no stream_start');
-        }
-        unawaited(_readFirmwareVersion());
+      debugPrint('✅ Control port: $_controlPortName');
+      if (autoStartStreaming) {
+        unawaited(_startStream());
       } else {
-        debugPrint('⚠️ Could not open control sibling $controlPort; using auto-stream');
+        debugPrint('ℹ️ Control port open; auto-start off, no stream_start');
       }
+      unawaited(_readFirmwareVersion());
+      notifyListeners();
     } catch (e) {
       debugPrint('⚠️ Control-port setup error (non-fatal): $e');
     }

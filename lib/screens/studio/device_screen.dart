@@ -404,8 +404,17 @@ class _FirmwareColumn extends StatelessWidget {
                 ),
                 HpiMeter(fraction: fraction ?? 0, color: p.accent, height: 6),
               ],
+              if (fw.notice case final n?) HpiNote(n, color: p.accent),
               if (fw.error case final e?)
                 HpiNote(e, color: p.error)
+              else if (fw.recovered case final r?)
+                HpiNote(
+                  'Recovered: the application is back on '
+                  '${r.port.split('/').last} running M7 ${r.m7}.'
+                  '${r.m4Behind ? ' The M4 is behind; install the bundle '
+                      'again to bring it into line.' : ''}',
+                  color: r.m4Behind ? p.warning : p.success,
+                )
               else if (outcome != null)
                 HpiNote(
                   outcome.applied.isEmpty
@@ -455,6 +464,23 @@ class _FirmwareColumn extends StatelessWidget {
                   tone: p.accent,
                   onPressed: fw.canInstall ? fw.install : null,
                 ),
+              for (final r in usb.recoveryPorts) ...[
+                const HpiRule(),
+                HpiKeyValue('Recovery mode', r.portName.split('/').last,
+                    valueColor: p.warning),
+                HpiNote(
+                  'Recovery writes the selected M7 straight into the running '
+                  'slot. It bypasses downgrade protection and leaves the M4 '
+                  'as it is.',
+                ),
+                HpiGhostButton(
+                  label: 'Recover with the selected firmware',
+                  icon: Icons.healing,
+                  expand: true,
+                  tone: p.warning,
+                  onPressed: fw.canRecover ? () => fw.recover(r.portName) : null,
+                ),
+              ],
               // Present but unavailable, with the reason, per the honesty rule.
               HpiActionRow(
                 icon: Icons.wifi,
@@ -484,6 +510,13 @@ class _FirmwareColumn extends StatelessWidget {
                             );
                           }
                         }
+                      : null,
+                ),
+                HpiActionRow(
+                  icon: Icons.healing,
+                  title: 'Enter recovery mode',
+                  onTap: usb.controlConnected && !fw.busy
+                      ? () => _confirmEnterRecovery(context)
                       : null,
                 ),
                 HpiActionRow(
@@ -528,6 +561,32 @@ class _FirmwareColumn extends StatelessWidget {
       ],
     );
   }
+}
+
+Future<void> _confirmEnterRecovery(BuildContext context) async {
+  final fw = context.read<FirmwareUpdateService>();
+  final go = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Enter recovery mode?'),
+      content: const Text(
+        'The device reboots into its bootloader. It stops streaming and stays '
+        'there until an M7 image is written with Recover. Use this when a '
+        'normal update cannot be installed.',
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Reboot into recovery'),
+        ),
+      ],
+    ),
+  );
+  if (go == true) await fw.enterRecovery();
 }
 
 String _orDash(String? s) => s == null || s.isEmpty ? '—' : s;

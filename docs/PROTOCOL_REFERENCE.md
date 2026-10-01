@@ -169,7 +169,7 @@ The HealthyPi 6 enumerates as a **composite dual-CDC** device:
 - **CDC 0** — sample stream (device→host). Opens on connect; the device auto-streams once CDC0 opens.
 - **CDC 1** — bidirectional MCUmgr SMP (control + events + OTA). Async events arrive as SMP responses with `seq = 0`.
 
-**Port pairing** (Studio picks CDC1 as the sibling of the opened CDC0 by longest-common-prefix):
+**Port pairing.** Studio reads each port's USB descriptors and groups a HealthyPi 6's ports by VID and serial number into one device (one row in Connect). The control port is identified **by protocol**: CDC1 answers `os echo`, CDC0 never does (`UsbSerialService.connectDevice` / `probeSmp`). Only when the host reports no USB ids does Studio fall back to name adjacency, probing the two ports with the longest common prefix:
 
 | OS | Pattern | Example |
 |---|---|---|
@@ -179,9 +179,9 @@ The HealthyPi 6 enumerates as a **composite dual-CDC** device:
 
 **Lifecycle rules of the road:** keep CDC1 open for the whole "connected" session; open CDC0 only while streaming and always keep a reader draining it; always send `stream_stop` before closing CDC0.
 
-VID/PID: Zephyr dev pair `0x2FE3 / 0x0100` (will move to a registered pair before mass production). Older HealthyPi generations used bridge chips (CH340 `1A86:7523`, CP210x `10C4:EA60`, FT232 `0403:6001`) — relevant only for legacy hardware.
+**USB identity** (`HealthyPiUsb` in [usb_device_info.dart](../lib/models/usb_device_info.dart)): release builds `0x1209:0xFF91` (pid.codes), dev builds `0x2FE3:0x0100`. Match on the **VID**: `0x1209:0xFF90` is a HealthyPi 5. The application and the bootloader share a PID.
 
-> **Known risk:** the longest-common-prefix CDC1 heuristic can select the wrong port on a multi-device host. The robust fix is an `os echo` identification probe, which the firmware supports.
+**Recovery mode.** MCUboot serial recovery enumerates as a **single** CDC port with product string `HealthyPi 6 Recovery`. Studio lists it in Connect as recovery, never opens it as a data port, and offers Recover on the Device screen. That writes an M7 straight to slot 0 (it bypasses downgrade prevention and leaves the M4 alone), then finds the application again and checks its versions. Before writing, Studio asks the port for `device_info`: the application answers group 64, the bootloader does not. Entering recovery from a running unit is group 64 `0xA5` (read `av`, write `{arm, rst}`).
 
 ---
 

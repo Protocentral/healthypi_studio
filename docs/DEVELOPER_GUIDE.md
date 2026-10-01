@@ -36,7 +36,9 @@ Device (HealthyPi 6)
 ### 2.1 USB serial ([usb_serial_service.dart](../lib/services/usb_serial_service.dart))
 - `flutter_libserialport` with `SerialPortReader` (event-driven, no polling). **Not** `usb_serial` — the old USB_PORT_SELECTION_ARCHITECTURE.md described the pre-migration `usb_serial` plugin and is retired.
 - `connect(portName, baudRate = 921600)`, 8N1. Auto-reconnect (10 tries / 2 s).
-- On connect, opens the CDC1 SMP sibling (`control` getter → `SmpSerialClient`) and sends `stream_start`. CDC1 also drives OTA, SD record, and MSC transfer mode.
+- `getPortInfo()` reads VID/PID/product/serial from the USB descriptors (unopened; falls back to name-only if the host refuses). `healthyPiDevices` groups a unit's ports; `recoveryPorts` lists units in MCUboot recovery, which `connect()` refuses to open as data.
+- `connectDevice(ports)` finds CDC1 as the port that answers `os echo`, then opens the other as CDC0. On connect, the control port (`control` → `SmpSerialClient`) is opened and `stream_start` sent. CDC1 also drives OTA, recovery, SD record and MSC transfer mode.
+- `expectReset()` extends auto-reconnect through a firmware update's reboots.
 - Always call `refreshDevices()` before showing a device picker.
 
 ### 2.2 WiFi ([wifi_serial_service.dart](../lib/services/wifi_serial_service.dart))

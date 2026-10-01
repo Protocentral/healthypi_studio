@@ -85,12 +85,24 @@ class ConnectScreenState extends State<ConnectScreen> {
     final usb = context.watch<UsbSerialService>();
     final nav = context.read<StudioNavController>();
 
-    final ports = usb.getAllPortsInfo();
+    // A HealthyPi 6 is one row, however many CDC ports it enumerates; a unit
+    // in recovery is its own row; anything else is listed port by port.
+    final devices = usb.healthyPiDevices;
+    final recovery = usb.recoveryPorts;
+    final grouped = {
+      for (final d in devices) ...d.map((i) => i.portName),
+      for (final r in recovery) r.portName,
+    };
+    final ports = usb
+        .getAllPortsInfo()
+        .where((i) => !grouped.contains(i.portName))
+        .toList();
     final showUsb =
         _filter == _SourceFilter.all || _filter == _SourceFilter.usb;
     final showWifi =
         _filter == _SourceFilter.all || _filter == _SourceFilter.wifi;
-    final found = showUsb ? ports.length : 0;
+    final found =
+        showUsb ? devices.length + recovery.length + ports.length : 0;
 
     return Center(
       child: SingleChildScrollView(
@@ -177,8 +189,11 @@ class ConnectScreenState extends State<ConnectScreen> {
                         ],
                       ),
                     ),
-                    if (showUsb)
+                    if (showUsb) ...[
+                      for (final d in devices) _healthyPiRow(context, d),
+                      for (final r in recovery) _recoveryRow(context, r),
                       for (final port in ports) _usbRow(context, port),
+                    ],
                     if (showWifi) _wifiRow(context),
                     if (found == 0 && !showWifi)
                       Padding(
@@ -297,6 +312,44 @@ class ConnectScreenState extends State<ConnectScreen> {
     );
   }
 
+  Widget _healthyPiRow(BuildContext context, List<UsbDeviceInfo> ports) {
+    final p = context.hpi;
+    final first = ports.first;
+    final key = ports.map((i) => i.portName).join('|');
+    final busy = _connecting == key;
+    return _DeviceRow(
+      icon: Icons.usb,
+      iconTone: p.brand,
+      highlight: true,
+      title: first.displayName,
+      subtitle: '${ports.map((i) => i.portName.split('/').last).join(' + ')} · '
+          'VID ${first.vidHex} PID ${first.pidHex}',
+      transport: 'USB CDC',
+      detail: first.serialNumber == null ? 'wired' : 'SN ${first.serialNumber}',
+      primary: true,
+      busy: busy,
+      onConnect: busy
+          ? null
+          : () => _connectUsb(key,
+              (usb) => usb.connectDevice([for (final i in ports) i.portName])),
+    );
+  }
+
+  /// A unit in MCUboot serial recovery: no data stream to connect to.
+  /// Recovery itself is run from the Device screen.
+  Widget _recoveryRow(BuildContext context, UsbDeviceInfo port) {
+    final p = context.hpi;
+    return _DeviceRow(
+      icon: Icons.healing,
+      iconTone: p.warning,
+      title: port.displayName,
+      subtitle: '${port.portName} · recover it from Device → Firmware update',
+      transport: 'MCUboot',
+      detail: 'no data stream',
+      onConnect: null,
+    );
+  }
+
   Widget _usbRow(BuildContext context, UsbDeviceInfo port) {
     final p = context.hpi;
     final busy = _connecting == port.portName;
@@ -310,7 +363,10 @@ class ConnectScreenState extends State<ConnectScreen> {
       detail: port.serialNumber ?? 'wired',
       primary: port.isHealthyPi,
       busy: busy,
-      onConnect: busy ? null : () => _connectUsb(port.portName),
+      onConnect: busy
+          ? null
+          : () => _connectUsb(
+              port.portName, (usb) => usb.connect(port.portName)),
     );
   }
 
@@ -360,20 +416,23 @@ class ConnectScreenState extends State<ConnectScreen> {
     );
   }
 
-  Future<void> _connectUsb(String portName) async {
+  Future<void> _connectUsb(
+      String key, Future<bool> Function(UsbSerialService usb) open) async {
     setState(() {
-      _connecting = portName;
+      _connecting = key;
       _error = null;
     });
     // Transports are exclusive: drop WiFi before claiming the serial port.
     final wifi = context.read<WifiSerialService>();
     if (wifi.isConnected) await wifi.disconnect();
     if (!mounted) return;
-    final ok = await context.read<UsbSerialService>().connect(portName);
+    final ok = await open(context.read<UsbSerialService>());
     if (!mounted) return;
     setState(() {
       _connecting = null;
-      _error = ok ? null : 'Could not open $portName. Is it already in use?';
+      _error = ok
+          ? null
+          : 'Could not open ${key.split('|').first}. Is it already in use?';
     });
   }
 

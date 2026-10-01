@@ -221,6 +221,19 @@ class SmpSerialClient {
           {Duration timeout = const Duration(seconds: 30)}) =>
       _typed(Hpi.m4fwCommit, M4fwCommitReply.fromMap, timeout: timeout);
 
+  /// Whether this firmware can reboot into MCUboot serial recovery (`av`).
+  Future<HpiResult<EnterRecoveryReply>> recoveryState() =>
+      _typed(Hpi.enterRecovery, EnterRecoveryReply.fromMap);
+
+  /// Arm recovery and reset: the device comes back as a single CDC port named
+  /// "HealthyPi 6 Recovery", and group 64 is gone until it is reflashed.
+  Future<HpiResult<EnterRecoveryWriteReply>> enterRecovery() => _typed(
+        Hpi.enterRecovery,
+        EnterRecoveryWriteReply.fromMap,
+        payload: enterRecoveryWriteRequest(arm: true, rst: true),
+        write: true,
+      );
+
   /// Arm or disarm USB Transfer Mode. Arming re-enumerates USB, so the reply
   /// may be the last thing this link carries.
   Future<HpiResult<TransferModeWriteReply>> transferMode(bool on) => _typed(
@@ -304,6 +317,20 @@ class SmpSerialClient {
       if (slot.active) return slot;
     }
     return null;
+  }
+
+  /// `os echo`. CDC1 (and MCUboot recovery) answers; CDC0 never does, which
+  /// is how the control port is told apart from the data port.
+  Future<bool> echo({Duration timeout = const Duration(milliseconds: 1500)}) async {
+    final OsMgmt? os = _os;
+    final SmpClient? client = _client;
+    if (os == null || client == null || !isOpen) return false;
+    client.timeout = timeout;
+    try {
+      return await os.echo('hpi') == 'hpi';
+    } on SmpException {
+      return false;
+    }
   }
 
   /// os reset — reboot into MCUboot to install pending images.

@@ -19,8 +19,13 @@ class UsbDeviceInfo {
   /// Product ID
   final int productId;
 
-  /// Whether this is identified as a HealthyPi device
+  /// Whether this is identified as a HealthyPi 6 (application or recovery)
   final bool isHealthyPi;
+
+  /// A HealthyPi 6 in MCUboot serial recovery: one CDC port, no data stream.
+  /// Never open it as a data port.
+  bool get isRecovery =>
+      isHealthyPi && (productDescription?.contains('Recovery') ?? false);
 
   /// Human-readable display name
   final String displayName;
@@ -81,52 +86,44 @@ class UsbDeviceInfo {
   int get hashCode => Object.hash(productId, vendorId, portName);
 }
 
+/// USB identity of a HealthyPi 6.
+///
+/// Match on the vendor id only. The application and the MCUboot recovery mode
+/// share one PID, and which of the two composite CDC ports carries control is
+/// a protocol question (the control port answers SMP), not a USB-id one.
+abstract final class HealthyPiUsb {
+  /// pid.codes VID (release builds) and Zephyr's development VID (dev builds).
+  static const Set<int> vendorIds = {0x1209, 0x2FE3};
+
+  /// Release PID under the pid.codes VID.
+  static const int releasePid = 0xFF91;
+
+  /// 0x1209:0xFF90 is a HealthyPi 5, not a 6.
+  static const int healthyPi5Pid = 0xFF90;
+
+  /// Product string while in MCUboot serial recovery.
+  static const String recoveryProduct = 'HealthyPi 6 Recovery';
+
+  static bool isHealthyPi6(int vid, int pid) =>
+      vendorIds.contains(vid) && !(vid == 0x1209 && pid == healthyPi5Pid);
+}
+
 /// Utility class for identifying and categorizing USB devices
 class UsbDeviceDetector {
-  /// Known HealthyPi device VID/PID combinations
-  static const Map<String, (int vid, int pid)> healthyPiDevices = {
-    'HealthyPi v1/v2 (CH340)': (0x1A86, 0x7523),
-    'HealthyPi v3 (CP210x)': (0x10C4, 0xEA60),
-    'HealthyPi (FT232)': (0x0403, 0x6001),
-  };
+  /// Check if a device is a HealthyPi 6 by its USB ids.
+  static bool isHealthyPiDevice(int vid, int pid) =>
+      HealthyPiUsb.isHealthyPi6(vid, pid);
 
-  /// Check if a device matches known HealthyPi VID/PID pairs
-  static bool isHealthyPiDevice(int vid, int pid) {
-    return healthyPiDevices.values.any((pair) => pair.$1 == vid && pair.$2 == pid);
-  }
-
-  /// Get HealthyPi model name for VID/PID pair
-  static String? getHealthyPiModelName(int vid, int pid) {
-    for (final entry in healthyPiDevices.entries) {
-      if (entry.value.$1 == vid && entry.value.$2 == pid) {
-        return entry.key;
+  /// A display name for a port, from what the USB descriptors report.
+  static String classifyDeviceType(int vid, int pid, String? product) {
+    if (HealthyPiUsb.isHealthyPi6(vid, pid)) {
+      if (product?.contains('Recovery') ?? false) {
+        return 'HealthyPi 6 — recovery mode';
       }
+      return vid == 0x2FE3 ? 'HealthyPi 6 (development build)' : 'HealthyPi 6';
     }
-    return null;
-  }
-
-  /// Classify USB device by type based on VID/PID and device name
-  static String classifyDeviceType(int vid, int pid, String deviceName) {
-    // Check for HealthyPi first
-    if (isHealthyPiDevice(vid, pid)) {
-      final modelName = getHealthyPiModelName(vid, pid);
-      return 'HealthyPi $modelName';
-    }
-
-    // Classify by common chip types
-    switch ((vid, pid)) {
-      case (0x1A86, 0x7523):
-        return 'CH340 Serial Adapter';
-      case (0x10C4, 0xEA60):
-        return 'CP210x Serial Adapter';
-      case (0x0403, 0x6001):
-        return 'FT232 Serial Adapter';
-      default:
-        // Use device name if available
-        if (deviceName.isNotEmpty) {
-          return deviceName;
-        }
-        return 'Unknown USB Device';
-    }
+    if (vid == 0x1209 && pid == HealthyPiUsb.healthyPi5Pid) return 'HealthyPi 5';
+    if (product != null && product.isNotEmpty) return product;
+    return 'Serial port';
   }
 }
