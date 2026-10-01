@@ -129,6 +129,15 @@ Future<void> _pickFirmware(BuildContext context) async {
   if (path != null) await fw.select(path);
 }
 
+/// A bundle zip the browser already extracted is a folder; pick that.
+Future<void> _pickFirmwareFolder(BuildContext context) async {
+  final fw = context.read<FirmwareUpdateService>();
+  final dir = await FilePicker.platform.getDirectoryPath(
+    dialogTitle: 'Select an extracted firmware bundle folder',
+  );
+  if (dir != null) await fw.select(dir);
+}
+
 /// Identity: the mono lockup beside the facts that identify this board.
 class _IdentityCard extends StatelessWidget {
   const _IdentityCard();
@@ -624,6 +633,14 @@ class _FirmwareColumn extends StatelessWidget {
                 enabled: !fw.busy,
                 onPick: () => _pickFirmware(context),
               ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: HpiGhostButton(
+                  label: 'Already unzipped? Choose the folder…',
+                  height: 28,
+                  onPressed: fw.busy ? null : () => _pickFirmwareFolder(context),
+                ),
+              ),
               if (fw.selectionError case final e?)
                 HpiNote(e, color: p.error)
               else if (bundle != null) ...[
@@ -640,7 +657,8 @@ class _FirmwareColumn extends StatelessWidget {
                   'A single M7 image, outside a bundle: there is no manifest '
                   'signature to check, and the M4 is left as it is. MCUboot '
                   'still verifies the image signature before booting it. If '
-                  'this came out of a release zip, select the zip instead.',
+                  'this came out of a release zip, select the zip, or the '
+                  'folder it was extracted to, instead.',
                   color: p.warning,
                 ),
               ],

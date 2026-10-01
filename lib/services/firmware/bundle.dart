@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:archive/archive.dart';
@@ -61,11 +62,34 @@ class FirmwareBundle {
     } catch (e) {
       throw BundleException('not a firmware bundle ($e)');
     }
-    Uint8List? read(String name) {
+    return _verify((name) {
       final f = archive.findFile(name);
       return f == null ? null : Uint8List.fromList(f.content);
-    }
+    }, keys);
+  }
 
+  /// Open and verify the folder a bundle zip was extracted to. Browsers do
+  /// this unasked (Safari's "Open safe files after downloading"), and the
+  /// folder holds the same manifest, signature and images, checked exactly as
+  /// for the zip. Member names come from the manifest, so one that resolves
+  /// outside [directory] is refused rather than followed.
+  static FirmwareBundle openDirectory(
+    String directory, {
+    List<TrustedKey> keys = trustedFirmwareKeys,
+  }) {
+    final root = Directory(directory).absolute.uri.normalizePath();
+    return _verify((name) {
+      final target = root.resolve(name).normalizePath();
+      if (!target.path.startsWith(root.path)) {
+        throw BundleException('$name is outside the bundle folder');
+      }
+      final f = File.fromUri(target);
+      return f.existsSync() ? f.readAsBytesSync() : null;
+    }, keys);
+  }
+
+  static FirmwareBundle _verify(
+      Uint8List? Function(String name) read, List<TrustedKey> keys) {
     final rawManifest = read('manifest.json');
     if (rawManifest == null) throw const BundleException('no manifest.json');
     final Map<String, dynamic> manifest;

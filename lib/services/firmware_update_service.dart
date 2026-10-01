@@ -68,9 +68,10 @@ class FirmwareUpdateService extends ChangeNotifier {
   bool get canInstall =>
       !_busy && _usb.controlConnected && _source != FirmwareSource.none;
 
-  /// Load [path]: a firmware bundle (a zip — `.zip`, or `.hpifw` from older
-  /// releases — verified now, before anything is sent), or a raw signed M7
-  /// `.bin`. Told apart by content, not by extension.
+  /// Load [path]: a firmware bundle — the zip (`.zip`, or `.hpifw` from older
+  /// releases) or the folder it was extracted to — verified now, before
+  /// anything is sent; or a raw signed M7 `.bin`. Told apart by content, not
+  /// by extension.
   Future<void> select(String path) async {
     _path = path;
     _bundle = null;
@@ -81,6 +82,12 @@ class FirmwareUpdateService extends ChangeNotifier {
     _error = null;
     _source = FirmwareSource.none;
     try {
+      if (await FileSystemEntity.isDirectory(path)) {
+        _bundle = FirmwareBundle.openDirectory(path);
+        _source = FirmwareSource.bundle;
+        notifyListeners();
+        return;
+      }
       final bytes = await File(path).readAsBytes();
       if (FirmwareBundle.looksLikeBundle(bytes)) {
         _bundle = FirmwareBundle.open(bytes);
