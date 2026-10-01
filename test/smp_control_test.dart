@@ -1,8 +1,6 @@
 // Group-64 control commands: every one is answered by the device and its reply
 // is read. Exercised over the TCP transport against a loopback fake device.
 
-import 'dart:async';
-import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -10,77 +8,14 @@ import 'package:healthypi_studio/protocol/hpi_group64.g.dart';
 import 'package:healthypi_studio/services/smp_serial_client.dart';
 import 'package:mcumgr_dart/mcumgr_dart.dart';
 
-/// Decodes the uart_mcumgr lines Studio writes; a test answers each request
-/// from [onRequest], or holds it in [held] to answer later and out of order.
-class _FakeDevice {
-  _FakeDevice(this._server) {
-    _server.listen((Socket socket) {
-      _socket = socket;
-      final decoder = UartMcumgrDecoder();
-      socket.listen((Uint8List chunk) {
-        for (final frame in decoder.add(chunk)) {
-          final req = SmpMessage.fromBytes(frame);
-          requests.add(req);
-          final reply = onRequest?.call(req);
-          if (reply != null) {
-            respond(req, reply);
-          } else {
-            held.add(req);
-            _heldChanged.add(null);
-          }
-        }
-      });
-    });
-  }
-
-  static Future<_FakeDevice> bind() async =>
-      _FakeDevice(await ServerSocket.bind(InternetAddress.loopbackIPv4, 0));
-
-  final ServerSocket _server;
-  Socket? _socket;
-  final requests = <SmpMessage>[];
-  final held = <SmpMessage>[];
-  final _heldChanged = StreamController<void>.broadcast();
-  Map<String, Object?>? Function(SmpMessage req)? onRequest;
-
-  int get port => _server.port;
-
-  Future<void> waitHeld(int n) async {
-    while (held.length < n) {
-      await _heldChanged.stream.first;
-    }
-  }
-
-  void respond(SmpMessage req, Map<String, Object?> payload) {
-    final frame = SmpMessage(
-      op: req.op == SmpOp.readReq ? SmpOp.readRsp : SmpOp.writeRsp,
-      group: req.group,
-      id: req.id,
-      seq: req.seq,
-      payload: payload,
-    ).toBytes();
-    for (final line in UartMcumgrCodec.encode(frame)) {
-      _socket?.add(line);
-    }
-  }
-
-  Future<void> close() async {
-    _socket?.destroy();
-    await _server.close();
-    await _heldChanged.close();
-  }
-}
-
-Map<String, Object?> _err(int rc, {int group = 64}) => {
-      'err': {'group': group, 'rc': rc},
-    };
+import 'support/fake_smp_device.dart';
 
 void main() {
-  late _FakeDevice device;
+  late FakeSmpDevice device;
   late SmpSerialClient client;
 
   setUp(() async {
-    device = await _FakeDevice.bind();
+    device = await FakeSmpDevice.bind();
     client = SmpSerialClient();
     expect(await client.openTcp('127.0.0.1', port: device.port), isTrue);
   });
@@ -116,7 +51,7 @@ void main() {
   });
 
   test('a group-64 error is reported by its catalog name', () async {
-    device.onRequest = (_) => _err(258);
+    device.onRequest = (_) => smpErr(258);
     final r = await client.streamStart(ch: 0x10);
     expect(r.ok, isFalse);
     expect(r.failure!.rc, 258);
@@ -125,7 +60,7 @@ void main() {
   });
 
   test('transfer_mode reports NO_MEDIA rather than arming', () async {
-    device.onRequest = (_) => _err(267);
+    device.onRequest = (_) => smpErr(267);
     final r = await client.transferMode(true);
     expect(r.failure!.code!.name, 'NO_MEDIA');
     expect(device.requests.single.payload, {'on': true});

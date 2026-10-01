@@ -45,6 +45,11 @@ dependencies:
   # uart_mcumgr framing. Transports live in lib/services/smp/.
   mcumgr_dart: ^0.4.0
 
+  # Firmware bundles (.hpifw): a zip whose manifest carries an ECDSA-P256
+  # signature. Both pure Dart.
+  archive: ^4.3.0
+  pointycastle: ^4.0.0
+
   # The app version, read from the built bundle rather than typed into a screen
   # where it would drift from `version:` above.
   package_info_plus: ^8.0.0

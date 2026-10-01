@@ -3,7 +3,6 @@
 
 import 'dart:async';
 
-import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:mcumgr_dart/mcumgr_dart.dart';
 
@@ -184,6 +183,44 @@ class SmpSerialClient {
   Future<HpiResult<SdStatusReply>> sdStatus() =>
       _typed(Hpi.sdStatus, SdStatusReply.fromMap);
 
+  Future<HpiResult<DeviceInfoReply>> deviceInfo(
+          {Duration timeout = const Duration(seconds: 3)}) =>
+      _typed(Hpi.deviceInfo, DeviceInfoReply.fromMap, timeout: timeout);
+
+  /// Versions of every processor, as the M7 reports them. An empty `m4fw`
+  /// means the M4 has not bound IPC to the M7 (no vitals until it does).
+  Future<HpiResult<FwVersionsReply>> fwVersions(
+          {Duration timeout = const Duration(seconds: 3)}) =>
+      _typed(Hpi.fwVersions, FwVersionsReply.fromMap, timeout: timeout);
+
+  // ---- M4 update (group 64, signed builds only) ----
+
+  /// Call first: the M4 update service's state, and whether it requires a
+  /// signature. Fails with rc 8 (ENOTSUP) on a build without the service.
+  Future<HpiResult<M4fwStatusReply>> m4fwStatus() =>
+      _typed(Hpi.m4fwStatus, M4fwStatusReply.fromMap);
+
+  /// Discard a stale upload (state RECEIVING or FAILED).
+  Future<HpiResult<void>> m4fwAbort() => request(Hpi.m4fwAbort);
+
+  /// Start an upload. There is no resume: an interrupted upload restarts at 0.
+  Future<HpiResult<void>> m4fwBegin(
+          {required int len, required List<int> sha, List<int>? sig}) =>
+      request(Hpi.m4fwBegin,
+          payload: m4fwBeginRequest(len: len, sha: sha, sig: sig));
+
+  /// One chunk; the reply's `off` is the next offset the device expects.
+  Future<HpiResult<M4fwChunkReply>> m4fwChunk(int off, List<int> data) =>
+      _typed(Hpi.m4fwChunk, M4fwChunkReply.fromMap,
+          payload: m4fwChunkRequest(off: off, data: data));
+
+  /// Verify the digest and signature, then erase and write bank 2. Takes
+  /// several seconds before the device replies; a short timeout would report
+  /// failure for an update that succeeded.
+  Future<HpiResult<M4fwCommitReply>> m4fwCommit(
+          {Duration timeout = const Duration(seconds: 30)}) =>
+      _typed(Hpi.m4fwCommit, M4fwCommitReply.fromMap, timeout: timeout);
+
   /// Arm or disarm USB Transfer Mode. Arming re-enumerates USB, so the reply
   /// may be the last thing this link carries.
   Future<HpiResult<TransferModeWriteReply>> transferMode(bool on) => _typed(
@@ -193,113 +230,73 @@ class SmpSerialClient {
         write: true,
       );
 
-  // ---- firmware update ----
+  // ---- firmware update (M7, MCUboot img group) ----
 
-  /// Upload [image] into the device's secondary slot for MCUboot image index
-  /// [imageIndex] (0 = M7, 1 = M4). Chunks are driven by the offset the device
-  /// returns, so a device that jumps the offset resumes correctly.
-  /// [onProgress] reports (bytesSent, total).
-  Future<bool> imageUpload(
+  /// Upload [image] to MCUboot image 0. The device routes it to that image's
+  /// secondary slot; there is no image 1 on this board. Chunks are driven by
+  /// the offset the device returns. [onProgress] reports (bytesSent, total).
+  /// Returns null on success, or why it failed.
+  Future<String?> imageUpload(
     Uint8List image, {
-    int imageIndex = 0,
     void Function(int sent, int total)? onProgress,
     Duration timeout = const Duration(seconds: 5),
   }) async {
     final ImgMgmt? img = _img;
     final SmpClient? client = _client;
-    if (img == null || client == null || !isOpen) return false;
+    if (img == null || client == null || !isOpen) return 'control port not open';
     client.timeout = timeout;
     try {
-      await img.upload(image, imageIndex: imageIndex, onProgress: onProgress);
-      return true;
+      await img.upload(image, imageIndex: 0, onProgress: onProgress);
+      return null;
     } on SmpException catch (e) {
       debugPrint('❌ OTA upload failed: $e');
-      return false;
+      return e.message;
     }
   }
 
-  /// Mark the uploaded image pending — MCUboot installs it on next boot.
-  /// [sha] is the SHA-256 of the full image.
-  Future<bool> imageTest(
-    List<int> sha, {
+  /// Mark the uploaded image pending, so MCUboot installs it on the next boot.
+  /// [hash] is the MCUboot image hash (`McuImageInfo.hash`), not the file's
+  /// SHA-256. Returns null on success, or why it failed.
+  Future<String?> imageMarkPending(
+    List<int> hash, {
     Duration timeout = const Duration(seconds: 3),
   }) async {
     final ImgMgmt? img = _img;
     final SmpClient? client = _client;
-    if (img == null || client == null || !isOpen) return false;
+    if (img == null || client == null || !isOpen) return 'control port not open';
     client.timeout = timeout;
     try {
-      await img.test(sha);
-      return true;
+      await img.test(hash);
+      return null;
     } on SmpException catch (e) {
-      debugPrint('❌ OTA image test failed: $e');
-      return false;
+      debugPrint('❌ OTA mark pending failed: $e');
+      return e.message;
     }
   }
 
-  /// Read the device's image slots — version, hash and the bootable / pending
-  /// / confirmed / active flags. Returns an empty list if the read fails, so a
-  /// caller can treat "could not read" and "nothing staged" alike.
-  Future<List<ImageSlot>> imageList({
+  /// Read the device's image slots, or null if the img group did not answer
+  /// (a development build has no bootloader and no img group).
+  Future<List<ImageSlot>?> imageStates({
     Duration timeout = const Duration(seconds: 5),
   }) async {
     final ImgMgmt? img = _img;
     final SmpClient? client = _client;
-    if (img == null || client == null || !isOpen) return const <ImageSlot>[];
+    if (img == null || client == null || !isOpen) return null;
     client.timeout = timeout;
     try {
       return await img.list();
     } on SmpException catch (e) {
       debugPrint('❌ image list failed: $e');
-      return const <ImageSlot>[];
+      return null;
     }
   }
 
-  /// Verify that the image the device has staged is the one we just uploaded.
-  ///
-  /// Without this an upload that silently truncated, or landed in the wrong
-  /// slot, is only discovered when the board fails to boot.
-  Future<bool> verifyStaged(List<int> sha, {int imageIndex = 0}) async {
-    final List<ImageSlot> slots = await imageList();
-    if (slots.isEmpty) return false;
-    for (final ImageSlot slot in slots) {
-      if (slot.image == imageIndex &&
-          !slot.active &&
-          _sameHash(slot.hash, sha)) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  static bool _sameHash(List<int> a, List<int> b) {
-    if (a.length != b.length || a.isEmpty) return false;
-    for (int i = 0; i < a.length; i++) {
-      if (a[i] != b[i]) return false;
-    }
-    return true;
-  }
-
-  /// Confirm the running image, so MCUboot stops treating it as on trial and
-  /// keeps it across the next reboot. Run this **after** the device has come
-  /// back up on the new firmware — confirming before the swap defeats the
-  /// revert-on-failure the test/confirm flow exists to provide.
-  Future<bool> imageConfirm(
-    List<int> sha, {
+  /// Read the device's image slots — version, hash and the bootable / pending
+  /// / confirmed / active flags. Empty if the read fails.
+  Future<List<ImageSlot>> imageList({
     Duration timeout = const Duration(seconds: 5),
-  }) async {
-    final ImgMgmt? img = _img;
-    final SmpClient? client = _client;
-    if (img == null || client == null || !isOpen) return false;
-    client.timeout = timeout;
-    try {
-      await img.confirm(sha);
-      return true;
-    } on SmpException catch (e) {
-      debugPrint('❌ image confirm failed: $e');
-      return false;
-    }
-  }
+  }) async =>
+      await imageStates(timeout: timeout) ?? const <ImageSlot>[];
 
   /// The running image, if the device reports one.
   Future<ImageSlot?> runningImage() async {
@@ -308,9 +305,6 @@ class SmpSerialClient {
     }
     return null;
   }
-
-  /// SHA-256 of an image (host-side; matches what `image test` expects).
-  List<int> sha256(Uint8List image) => crypto.sha256.convert(image).bytes;
 
   /// os reset — reboot into MCUboot to install pending images.
   Future<bool> osReset({Duration timeout = const Duration(seconds: 3)}) async {

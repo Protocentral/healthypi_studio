@@ -1,14 +1,15 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:mcumgr_dart/mcumgr_dart.dart' show ImageSlot;
 
 import '../../services/data_parser.dart';
 import '../../services/live_data_pump.dart';
+import '../../services/firmware/bundle.dart';
+import '../../services/firmware/firmware_updater.dart';
+import '../../services/firmware_update_service.dart';
 import '../../services/smp_serial_client.dart';
 import '../../services/usb_serial_service.dart';
 import '../../services/wifi_serial_service.dart';
@@ -21,14 +22,10 @@ import '../../widgets/hpi/hpi_brand.dart';
 import '../../widgets/hpi/hpi_primitives.dart';
 import '../../widgets/hpi/hpi_table.dart';
 
-/// Where the MCUmgr SMP session is carried.
-enum OtaTransport { usb, wifi }
-
 /// Device & firmware (design 2g).
 ///
-/// Identity, health counters and the sensor inventory by part number. OTA is a
-/// card inside the shell rather than its own `Scaffold`, with the
-/// streaming-paused consequence stated up front.
+/// Identity, health counters and firmware update. The update itself runs in
+/// [FirmwareUpdateService] at shell level; this screen only drives it.
 class DeviceScreen extends StatefulWidget {
   const DeviceScreen({super.key});
 
@@ -37,32 +34,17 @@ class DeviceScreen extends StatefulWidget {
 }
 
 class DeviceScreenState extends State<DeviceScreen> {
-  final TextEditingController _host =
-      TextEditingController(text: 'healthypi.local');
-  OtaTransport _transport = OtaTransport.usb;
-  String? _m7Path;
-  String? _m4Path;
-  bool _busy = false;
-  bool _done = false;
-  double _progress = 0;
-  String _status = 'Select a signed firmware image to begin.';
-
-  bool get isUpdating => _busy;
-
-  @override
-  void dispose() {
-    _host.dispose();
-    super.dispose();
-  }
-
   List<Widget> buildStatusItems(BuildContext context) {
     final p = context.hpi;
     final usb = context.watch<UsbSerialService>();
-    if (_busy) {
+    final fw = context.watch<FirmwareUpdateService>();
+    if (fw.busy) {
+      final f = fw.progress.fraction;
       return [
         StatusItem('Updating firmware · streaming paused',
             icon: Icons.system_update, tone: p.accent),
-        StatusItem('${(_progress * 100).toStringAsFixed(0)}% transferred'),
+        StatusItem(_stageLabel(fw.progress.stage) +
+            (f == null ? '' : ' · ${(f * 100).toStringAsFixed(0)}%')),
         const StatusItem('do not disconnect'),
       ];
     }
@@ -75,7 +57,8 @@ class DeviceScreenState extends State<DeviceScreen> {
       StatusItem(usb.isConnected
           ? 'USB ${usb.connectedPortName?.split('/').last ?? ""}'
           : 'not attached over USB'),
-      if (_done) const StatusItem('update sent · device rebooting'),
+      if (usb.lastControlFailure case final f?)
+        StatusItem(f.toString(), icon: Icons.error_outline, tone: p.warning),
     ];
   }
 
@@ -83,12 +66,13 @@ class DeviceScreenState extends State<DeviceScreen> {
   Widget build(BuildContext context) {
     final p = context.hpi;
     final usb = context.watch<UsbSerialService>();
+    final fw = context.watch<FirmwareUpdateService>();
     final parser = context.watch<DataParser>();
 
     return ScreenBody(
       header: ScreenHeader(
         title: StudioDestination.device.title,
-        badge: _busy
+        badge: fw.busy
             ? HpiBadge('Updating', tone: p.accent)
             : (usb.controlConnected
                 ? HpiBadge('Connected', tone: p.success)
@@ -100,7 +84,7 @@ class DeviceScreenState extends State<DeviceScreen> {
       ),
       child: ScreenColumns(
         sideWidth: 352,
-        side: _FirmwareColumn(state: this),
+        side: const _FirmwareColumn(),
         main: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -114,191 +98,30 @@ class DeviceScreenState extends State<DeviceScreen> {
       ),
     );
   }
+}
 
-  // ── OTA ────────────────────────────────────────────────────────────────────
+String _stageLabel(UpdateStage s) => switch (s) {
+      UpdateStage.idle => 'Ready',
+      UpdateStage.checking => 'Checking the device',
+      UpdateStage.uploadingM4 => 'Uploading M4',
+      UpdateStage.committingM4 => 'M4: verifying and writing bank 2',
+      UpdateStage.uploadingM7 => 'Uploading M7',
+      UpdateStage.markingM7 => 'M7: marking for install',
+      UpdateStage.resetting => 'Rebooting the device',
+      UpdateStage.verifying => 'Reading back versions',
+      UpdateStage.done => 'Done',
+      UpdateStage.failed => 'Failed',
+    };
 
-  Future<void> pick({required bool m7}) async {
-    final res = await FilePicker.platform.pickFiles(
-      dialogTitle: m7
-          ? 'Select signed M7 image (.bin)'
-          : 'Select signed M4 image (.bin)',
-      type: FileType.custom,
-      allowedExtensions: const ['bin'],
-    );
-    if (res == null || res.files.isEmpty) return;
-    setState(() {
-      if (m7) {
-        _m7Path = res.files.single.path;
-      } else {
-        _m4Path = res.files.single.path;
-      }
-    });
-  }
-
-  /// Upload each image into its MCUboot secondary slot, mark it pending, then
-  /// reset so MCUboot installs and boots the new firmware.
-  Future<void> install() async {
-    if (_m7Path == null) {
-      _set('Select at least the M7 image.');
-      return;
-    }
-    final usb = context.read<UsbSerialService>();
-
-    SmpSerialClient client;
-    var ownsClient = false;
-    if (_transport == OtaTransport.wifi) {
-      final host = _host.text.trim();
-      if (host.isEmpty) {
-        _set('Enter the device host (e.g. healthypi.local).');
-        return;
-      }
-      setState(() {
-        _busy = true;
-        _done = false;
-        _progress = 0;
-      });
-      _set('Connecting to $host:9000…');
-      final tcp = SmpSerialClient();
-      if (!await tcp.openTcp(host)) {
-        _fail('WiFi connect to $host:9000 failed. Is the device on WiFi with '
-            'the SMP gateway up?');
-        return;
-      }
-      client = tcp;
-      ownsClient = true;
-    } else {
-      if (!usb.controlConnected) {
-        _set('Control port not open — connect the device over USB first.');
-        return;
-      }
-      setState(() {
-        _busy = true;
-        _done = false;
-        _progress = 0;
-      });
-      client = usb.control;
-    }
-
-    try {
-      // Free the link: the stream would otherwise compete with the upload.
-      await client.streamStop();
-
-      _set('Uploading M7 image…');
-      final m7 = Uint8List.fromList(await File(_m7Path!).readAsBytes());
-      if (!await client.imageUpload(m7,
-          imageIndex: 0,
-          onProgress: (sent, total) => _setProgress(sent / total))) {
-        _fail('M7 upload failed.');
-        return;
-      }
-      final List<int> m7Sha = client.sha256(m7);
-      _set('Verifying staged M7 image…');
-      if (!await client.verifyStaged(m7Sha, imageIndex: 0)) {
-        _fail('M7 verification failed — the image the device staged does not '
-            'match the file that was sent. Nothing has been marked for boot.');
-        return;
-      }
-      if (!await client.imageTest(m7Sha)) {
-        _fail('M7 image test (mark pending) failed.');
-        return;
-      }
-
-      if (_m4Path != null) {
-        _set('Uploading M4 image…');
-        _setProgress(0);
-        final m4 = Uint8List.fromList(await File(_m4Path!).readAsBytes());
-        if (!await client.imageUpload(m4,
-            imageIndex: 1,
-            onProgress: (sent, total) => _setProgress(sent / total))) {
-          _fail('M4 upload failed.');
-          return;
-        }
-        final List<int> m4Sha = client.sha256(m4);
-        _set('Verifying staged M4 image…');
-        if (!await client.verifyStaged(m4Sha, imageIndex: 1)) {
-          _fail('M4 verification failed — the image the device staged does not '
-              'match the file that was sent. Nothing has been marked for boot.');
-          return;
-        }
-        if (!await client.imageTest(m4Sha)) {
-          _fail('M4 image test (mark pending) failed.');
-          return;
-        }
-      }
-
-      _set('Rebooting device to install…');
-      await client.osReset();
-      if (!mounted) return;
-      setState(() {
-        _busy = false;
-        _done = true;
-        _progress = 1;
-        _status = 'Update sent. The device is rebooting to install the new '
-            'firmware and will reconnect in a few seconds. It is running on '
-            'trial until you confirm it — use Confirm firmware under '
-            'Maintenance once it is back, or MCUboot reverts on the next '
-            'reboot.';
-      });
-    } catch (e) {
-      _fail('Update error: $e');
-    } finally {
-      if (ownsClient) client.close();
-    }
-  }
-
-  /// Confirm the image the device is currently running.
-  ///
-  /// MCUboot boots a tested image on trial and reverts on the next reboot
-  /// unless the host confirms it. That confirmation cannot happen during the
-  /// update — the device is rebooting — so it is a separate step once the board
-  /// is back, which also proves the new firmware actually came up and can talk.
-  Future<void> confirmRunningFirmware(BuildContext context) async {
-    final UsbSerialService usb = context.read<UsbSerialService>();
-    final ImageSlot? running = await usb.control.runningImage();
-    if (!context.mounted) return;
-
-    if (running == null) {
-      _snack(context, 'Could not read the device image list.');
-      return;
-    }
-    if (running.confirmed) {
-      _snack(context,
-          'Already confirmed — running ${running.version} (${running.shortHash}).');
-      return;
-    }
-    final bool ok = await usb.control.imageConfirm(running.hash);
-    if (!context.mounted) return;
-    _snack(
-      context,
-      ok
-          ? 'Confirmed ${running.version} (${running.shortHash}). It will be '
-              'kept across reboots.'
-          : 'Confirm failed — the device is still on trial and will revert on '
-              'the next reboot.',
-    );
-  }
-
-  void _snack(BuildContext context, String message) =>
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text(message)));
-
-  void setTransport(OtaTransport t) => setState(() => _transport = t);
-
-  void _set(String s) {
-    if (mounted) setState(() => _status = s);
-  }
-
-  void _setProgress(double v) {
-    if (mounted) setState(() => _progress = v.clamp(0, 1));
-  }
-
-  void _fail(String s) {
-    if (!mounted) return;
-    setState(() {
-      _busy = false;
-      _status = s;
-    });
-  }
+Future<void> _pickFirmware(BuildContext context) async {
+  final fw = context.read<FirmwareUpdateService>();
+  final res = await FilePicker.platform.pickFiles(
+    dialogTitle: 'Select a firmware bundle (.hpifw) or a signed M7 image (.bin)',
+    type: FileType.custom,
+    allowedExtensions: const ['hpifw', 'bin'],
+  );
+  final path = res?.files.single.path;
+  if (path != null) await fw.select(path);
 }
 
 /// Identity: the mono lockup beside the facts that identify this board.
@@ -514,21 +337,22 @@ class _SensorInventory extends StatelessWidget {
 
 /// Firmware update and maintenance, in the side column.
 class _FirmwareColumn extends StatelessWidget {
-  const _FirmwareColumn({required this.state});
-
-  final DeviceScreenState state;
+  const _FirmwareColumn();
 
   @override
   Widget build(BuildContext context) {
     final p = context.hpi;
     final usb = context.watch<UsbSerialService>();
-    final ready = state._transport == OtaTransport.wifi || usb.controlConnected;
+    final fw = context.watch<FirmwareUpdateService>();
+    final bundle = fw.bundle;
+    final outcome = fw.outcome;
+    final fraction = fw.progress.fraction;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         HpiCard(
-          borderColor: state._busy || state._m7Path != null
+          borderColor: fw.busy || fw.source != FirmwareSource.none
               ? p.accent.withValues(alpha: 0.35)
               : null,
           child: HpiColumn(
@@ -541,70 +365,84 @@ class _FirmwareColumn extends StatelessWidget {
                   Expanded(child: HpiSectionTitle('Firmware update')),
                 ],
               ),
-              HpiSegmented<OtaTransport>(
-                expand: true,
-                height: 32,
-                segments: const [
-                  HpiSegment(value: OtaTransport.usb, label: 'USB CDC1'),
-                  HpiSegment(value: OtaTransport.wifi, label: 'WiFi TCP'),
-                ],
-                value: state._transport,
-                onChanged: state._busy ? null : state.setTransport,
+              _FileRow(
+                label: 'Firmware bundle (.hpifw)',
+                path: fw.path,
+                enabled: !fw.busy,
+                onPick: () => _pickFirmware(context),
               ),
-              if (state._transport == OtaTransport.wifi)
-                SizedBox(
-                  height: 34,
-                  child: TextField(
-                    controller: state._host,
-                    enabled: !state._busy,
-                    style: HpiText.mono(p.textPrimary, size: 12),
-                    decoration: const InputDecoration(
-                      hintText: 'healthypi.local',
-                    ),
-                  ),
+              if (fw.selectionError case final e?)
+                HpiNote(e, color: p.error)
+              else if (bundle != null) ...[
+                HpiKeyValue('Release', bundle.release),
+                for (final name in FirmwareBundle.applyOrder)
+                  if (bundle.images[name] case final img?)
+                    HpiKeyValue(name.toUpperCase(), img.version),
+                HpiKeyValue('Signed by', bundle.signer.label,
+                    valueColor:
+                        bundle.signer.development ? p.warning : p.success),
+              ] else if (fw.source == FirmwareSource.rawM7) ...[
+                HpiKeyValue('M7 image', fw.rawVersion ?? '—'),
+                HpiNote(
+                  'A single M7 image, outside a bundle: there is no manifest '
+                  'signature to check, and the M4 is left as it is. MCUboot '
+                  'still verifies the image signature before booting it.',
+                  color: p.warning,
                 ),
-              _FileRow(
-                label: 'M7 firmware (required)',
-                path: state._m7Path,
-                enabled: !state._busy,
-                onPick: () => state.pick(m7: true),
-              ),
-              _FileRow(
-                label: 'M4 firmware (optional)',
-                path: state._m4Path,
-                enabled: !state._busy,
-                onPick: () => state.pick(m7: false),
-              ),
-              if (state._busy) ...[
+              ],
+              if (fw.busy) ...[
                 Row(
                   children: [
                     Expanded(
-                      child: HpiMono('Transferring',
+                      child: HpiMono(_stageLabel(fw.progress.stage),
                           size: 11, color: p.textSecondary),
                     ),
-                    HpiMono('${(state._progress * 100).toStringAsFixed(0)}%',
-                        size: 11, color: p.accent),
+                    if (fraction != null)
+                      HpiMono('${(fraction * 100).toStringAsFixed(0)}%',
+                          size: 11, color: p.accent),
                   ],
                 ),
-                HpiMeter(fraction: state._progress, color: p.accent, height: 6),
+                HpiMeter(fraction: fraction ?? 0, color: p.accent, height: 6),
               ],
-              HpiNote(state._status,
-                  color: state._done ? p.success : p.textSecondary),
-              if (!ready)
+              if (fw.error case final e?)
+                HpiNote(e, color: p.error)
+              else if (outcome != null)
+                HpiNote(
+                  outcome.applied.isEmpty
+                      ? 'Nothing to install: the device already runs these '
+                          'versions.'
+                      : outcome.ok
+                          ? 'Installed and verified. The device reports '
+                              'M7 ${outcome.versionsAfter['m7'] ?? '—'}, '
+                              'M4 ${_orDash(outcome.versionsAfter['m4'])}.'
+                          : 'The device came back, but did not report the '
+                              'expected firmware. See the log below.',
+                  color: outcome.ok ? p.success : p.error,
+                ),
+              if (fw.log.isNotEmpty)
+                HpiWell(
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: HpiMono(fw.log.join('\n'),
+                        size: 10.5, color: p.textSecondary),
+                  ),
+                ),
+              if (!usb.controlConnected)
                 HpiNote(
                   'No control port. Connect the HealthyPi 6 over USB — the '
-                  'second CDC interface carries the MCUmgr session — or switch '
-                  'to WiFi.',
+                  'second CDC interface carries the update session.',
                   color: p.accent,
                 ),
               const HpiRule(),
               HpiNote(
-                'Keep the board connected. Streaming is paused for the duration '
-                'and resumes on reboot. Verify the version after it comes back.',
+                'Keep the board connected. Streaming pauses during the update, '
+                'and the device reboots, twice if the M7 changed, before '
+                'Studio reads back the installed versions. An older M7 is '
+                'refused before upload: MCUboot would not boot it.',
               ),
-              if (state._busy)
+              if (fw.busy)
                 HpiGhostButton(
-                  label: 'Transfer in progress…',
+                  label: 'Update in progress…',
                   icon: Icons.hourglass_top,
                   expand: true,
                   onPressed: null,
@@ -615,9 +453,14 @@ class _FirmwareColumn extends StatelessWidget {
                   icon: Icons.upload,
                   expand: true,
                   tone: p.accent,
-                  onPressed:
-                      ready && state._m7Path != null ? state.install : null,
+                  onPressed: fw.canInstall ? fw.install : null,
                 ),
+              // Present but unavailable, with the reason, per the honesty rule.
+              HpiActionRow(
+                icon: Icons.wifi,
+                title: 'Update over Wi-Fi — needs the HealthyBridge SMP relay, '
+                    'not yet in the ESP32 firmware',
+              ),
             ],
           ),
         ),
@@ -631,7 +474,7 @@ class _FirmwareColumn extends StatelessWidget {
                 HpiActionRow(
                   icon: Icons.restart_alt,
                   title: 'Reboot device',
-                  onTap: usb.controlConnected && !state._busy
+                  onTap: usb.controlConnected && !fw.busy
                       ? () async {
                           await usb.control.osReset();
                           if (context.mounted) {
@@ -644,16 +487,9 @@ class _FirmwareColumn extends StatelessWidget {
                       : null,
                 ),
                 HpiActionRow(
-                  icon: Icons.verified_outlined,
-                  title: 'Confirm firmware',
-                  onTap: usb.controlConnected && !state._busy
-                      ? () => state.confirmRunningFirmware(context)
-                      : null,
-                ),
-                HpiActionRow(
                   icon: Icons.play_arrow,
                   title: 'Start device stream',
-                  onTap: usb.controlConnected && !state._busy
+                  onTap: usb.controlConnected && !fw.busy
                       ? () => _report(context, usb.setDeviceStreaming(true),
                           'Device stream started')
                       : null,
@@ -661,7 +497,7 @@ class _FirmwareColumn extends StatelessWidget {
                 HpiActionRow(
                   icon: Icons.stop,
                   title: 'Stop device stream',
-                  onTap: usb.controlConnected && !state._busy
+                  onTap: usb.controlConnected && !fw.busy
                       ? () => _report(context, usb.setDeviceStreaming(false),
                           'Device stream stopped')
                       : null,
@@ -671,7 +507,7 @@ class _FirmwareColumn extends StatelessWidget {
                   title: usb.deviceRecording
                       ? 'Stop on-board recording'
                       : 'Start on-board recording',
-                  onTap: usb.controlConnected && !state._busy
+                  onTap: usb.controlConnected && !fw.busy
                       ? () => _report(
                           context,
                           usb.setDeviceRecording(!usb.deviceRecording),
@@ -693,6 +529,8 @@ class _FirmwareColumn extends StatelessWidget {
     );
   }
 }
+
+String _orDash(String? s) => s == null || s.isEmpty ? '—' : s;
 
 /// Show the device's answer to a control command: the failure by name, or
 /// [success].

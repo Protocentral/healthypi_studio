@@ -129,7 +129,10 @@ Continuation lines use the `0x04 0x14` start marker. CBOR body. Framing, CBOR an
 |---|---|---|---|---|
 | 0 (OS) | 5 | reset (reboot to MCUboot) | `osReset()` | timeout treated as success |
 | 1 (Image) | 1 | image upload (chunked) | `imageUpload()` | yes — device returns next offset |
-| 1 (Image) | 0 | image test / mark-pending (`confirm:false`) | `imageTest(sha)` | yes |
+| 1 (Image) | 0 | image state read | `imageStates()` | yes — slot hashes compared with the MCUboot TLV hash |
+| 1 (Image) | 0 | image test / mark-pending (`confirm:false`) | `imageMarkPending(tlvHash)` | yes |
+| 64 | 0x31 | fw_versions | `fwVersions()` | yes — M7/M4/ESP versions; empty `m4fw` = M4 not bound |
+| 64 | 0xA0–0xA4 | M4 update: begin / chunk / commit / status / abort | `m4fw*()` | yes — 268 IMAGE_INVALID, 270 BUSY, 271 IMAGE_NOT_M4 |
 | 64 (vendor `hpi`) | 0x20/0x21 | stream start/stop (`ch`,`ann`) | `streamStart()/streamStop()` | yes — 258 CHANNEL_NOT_AVAILABLE surfaced |
 | 64 | 0x22 | stream status | `streamStatus()` | yes |
 | 64 | 0x60 | SD status | `sdStatus()` | yes |
@@ -138,7 +141,7 @@ Continuation lines use the `0x04 0x14` start marker. CBOR body. Framing, CBOR an
 
 Every group-64 call returns an `HpiResult`: the typed reply, or an `HpiFailure` naming the catalog error (`NO_MEDIA — no SD card present`). UI state such as "device recording" follows the reply, not the request.
 
-**OTA flow:** upload (128-byte chunks, first chunk carries `image`/`len`/`sha`) → `imageTest` (mark pending) → `osReset` (reboot into MCUboot, which swaps). Dual-image supported (image index 0/1; M7 required, M4 optional).
+**OTA flow:** see DEVELOPER_GUIDE §7. In short: the M7 is MCUboot image 0 (there is no image 1; the M4 is not an MCUboot image), identified by its SHA-256 TLV, never by the file's SHA-256. The M4 goes through group 64 `0xA0–0xA4`. The bootloader is overwrite-only: no trial, no confirm.
 
 ### 3.3 Firmware-defined but NOT yet in Studio
 
@@ -147,7 +150,7 @@ The firmware host-interface contract (STUDIO_INTEGRATION_NOTES / DUAL_CDC plan) 
 | IDs | Feature | FW phase |
 |---|---|---|
 | `0x0001` | device_info (sn, fw, channels) | 2 |
-| `0x0030/0x0031` | telemetry / fw_versions | 2 |
+| `0x0030` | telemetry | 2 |
 | `0x0010–0x0013` | unlock/lock (security) | 11 |
 | `0x0050–0x0052` | HealthyLink modules | 4 |
 | `0x0060–0x0068` | SD recordings browser | 5 |
@@ -155,7 +158,7 @@ The firmware host-interface contract (STUDIO_INTEGRATION_NOTES / DUAL_CDC plan) 
 | `0x0080–0x0082` | diagnostics/self-test | 7 |
 | `0x0090–0x0092` | log streaming | 8 |
 
-**OTA hardening gaps (OTA is beta):** no `image confirm` (confirm:true) after reboot, no `image list`/version read-back to verify the swap, no per-chunk retry, `osReset` timeout masks failures, CBOR/CRC16 code is hand-rolled and untested. Error codes 256+ (`HPI_ERR_NOT_READY`, `HW_FAULT`, `CHANNEL_NOT_AVAILABLE`, `INSUFFICIENT_STORAGE`, …) are defined by firmware but not surfaced in the UI.
+**OTA status (beta):** not yet exercised on hardware from Studio, and only the development signing key is trusted. Group-64 error codes are surfaced by name everywhere (`HpiFailure.label`).
 
 ---
 

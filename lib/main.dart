@@ -9,6 +9,7 @@ import 'services/ble_service.dart';
 import 'services/data_parser.dart';
 import 'services/eeg_packet_service.dart';
 import 'services/filter_integration_service.dart';
+import 'services/firmware_update_service.dart';
 import 'services/hrv_packet_service.dart';
 import 'services/live_data_pump.dart';
 import 'services/recording_engine.dart';
@@ -98,6 +99,13 @@ class HealthyPiStudio extends StatelessWidget {
             });
             return usb;
           },
+        ),
+
+        // Firmware update. Shell level, below UsbSerialService, so an update
+        // survives navigating away from the Device screen.
+        ChangeNotifierProvider(
+          create: (context) =>
+              FirmwareUpdateService(context.read<UsbSerialService>()),
         ),
 
         // ── Recording and export ─────────────────────────────────────────────

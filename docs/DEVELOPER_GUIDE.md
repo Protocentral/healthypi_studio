@@ -114,9 +114,12 @@ Commit the snapshots and the generated files together. CI regenerates and fails 
 
 Screen: the **Firmware update** panel on the Device screen ([device_screen.dart](../lib/screens/studio/device_screen.dart)), reached from `DEVICE` in the left rail.
 
-- **Transports:** USB CDC1 (default) or WiFi TCP :9000 (`healthypi.local`, ESP32 SMP passthrough) via a UI toggle. **No BLE DFU.**
-- **Flow:** pick `.bin` → `imageUpload` (128-byte chunks) → `imageTest` (mark pending) → `osReset` (reboot into MCUboot). Dual-image (M7 required, M4 optional).
-- **Current limitations (OTA is beta — harden before GA):** no `image confirm` after reboot, no version/hash read-back to confirm the swap ("verify the version after it comes back" is left to the user), no per-chunk retry, `osReset` timeout is treated as success, hand-rolled CBOR/CRC16 with no tests, CDC1 auto-detect uses a fragile longest-common-prefix heuristic.
+- **Pieces:** `FirmwareUpdateService` (shell-level provider: selection, progress, log) drives `FirmwareUpdater` ([firmware_updater.dart](../lib/services/firmware/firmware_updater.dart)), a port of the firmware's `tools/healthypi/src/healthypi/fw/update.py`. `FirmwareBundle` ([bundle.dart](../lib/services/firmware/bundle.dart)) opens and verifies `.hpifw` zips against the keys in [keys.dart](../lib/services/firmware/keys.dart).
+- **Transport:** USB CDC1 only. Wi-Fi OTA (TCP :9000) needs an ESP32 SMP relay that `healthybridge-esp32` has not shipped, so the Device screen shows it disabled with that reason. `SmpSerialClient.openTcp` is kept for when it lands. **No BLE DFU.**
+- **Flow** (`applyBundle`): `fw_versions` → check the img group and `m4fw_status` answer (a dev build has neither) → refuse an M7 downgrade → skip images already at the bundle version → `stream_stop` → **M4** over group 64: `m4fw_status` (abort a stale RECEIVING/FAILED upload; refuse unsigned when `sig`), `m4fw_begin`, `m4fw_chunk` (trust the device's `off`), `m4fw_commit` with a 30 s timeout → **M7** over the img group: upload to image 0, check slot 1, mark pending with the **MCUboot image hash** (`McuImageInfo.hash`, the SHA-256 TLV) → reset, wait 12 s, reconnect → if the M7 changed and `m4fw` is empty, reset once more → read back versions, and check that slot 0's hash equals the bundle's M7.
+- **No trial, no confirm:** MCUboot is overwrite-only with downgrade prevention. Studio used to tell users to "confirm" the image; that action is gone.
+- **Tests:** `firmware_bundle_test.dart` (signature, digests, versions) and `firmware_updater_test.dart` (a fake board: stale abort, refused commit, downgrade, dev build, second reset).
+- **Still beta:** not yet run against hardware from Studio; only the development signing key is trusted (release blocker in `keys.dart`); `osReset` itself still treats a timeout as success, since the device often resets before replying, but the read-back after reconnect is what decides the result now.
 
 Full SMP surface: [PROTOCOL_REFERENCE.md §3](PROTOCOL_REFERENCE.md).
 

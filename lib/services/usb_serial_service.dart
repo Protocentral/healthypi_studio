@@ -57,6 +57,19 @@ class UsbSerialService extends ChangeNotifier {
   int _reconnectAttempts = 0;
   static const int _maxReconnectAttempts = 10;
   static const Duration _reconnectDelay = Duration(seconds: 2);
+
+  // While a reset is expected (firmware update), keep retrying past
+  // _maxReconnectAttempts: MCUboot copies the new image before the app
+  // enumerates again, which can outlast the normal retry budget.
+  DateTime? _resetDeadline;
+
+  /// Tell the service the device is about to reset on purpose, so it keeps
+  /// trying to reconnect for [window] instead of giving up after
+  /// $_maxReconnectAttempts attempts.
+  void expectReset({Duration window = const Duration(seconds: 90)}) {
+    _resetDeadline = DateTime.now().add(window);
+    _reconnectAttempts = 0;
+  }
   
   List<String> get availablePorts => List.unmodifiable(_availablePorts);
   bool get isConnected => _port != null && _port!.isOpen;
@@ -549,7 +562,9 @@ class UsbSerialService extends ChangeNotifier {
       return;
     }
     
-    if (_reconnectAttempts >= _maxReconnectAttempts) {
+    final resetPending =
+        _resetDeadline != null && DateTime.now().isBefore(_resetDeadline!);
+    if (_reconnectAttempts >= _maxReconnectAttempts && !resetPending) {
       debugPrint('🔄 Max reconnection attempts ($_maxReconnectAttempts) reached');
       _lastConnectedPortName = null;
       return;

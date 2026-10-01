@@ -273,6 +273,10 @@ cases, each visible in the UI rather than hidden:
   control port opens and shown as reported; serial and MAC are in neither the
   stream nor the MCUmgr surface, so they render as em dashes rather than
   invented values.
+* **Firmware update over Wi-Fi** — the ESP32 firmware has no TCP :9000 SMP
+  relay yet, so the Device screen lists the option disabled, with that reason,
+  rather than offering a transport toggle that cannot connect. A bundle signed
+  by the development key shows its signer in amber.
 * **No device attached** — Live runs the built-in generator and the badge reads
   `Demo data`, with the status line saying `Demo data · no device attached`.
 

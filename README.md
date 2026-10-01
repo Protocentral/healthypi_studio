@@ -151,18 +151,30 @@ the MCUmgr SMP surface and the USB dual-CDC topology are specified in
 
 ## Updating a device
 
-Studio speaks MCUmgr SMP over USB CDC 1 or Wi-Fi TCP port 9000, and flashes the M7
-image — and optionally the M4 image — from the Device screen. The device side of the
-update system (MCUboot, the signed bundle, serial recovery) is documented in
+Studio installs a signed `.hpifw` release bundle over USB (CDC 1) from the Device
+screen. It does what the firmware's own `healthypi fw update` does:
+
+- verifies the bundle's manifest signature and every image digest before sending
+  anything;
+- refuses an M7 older than the installed one, which MCUboot would not boot;
+- updates the M4 through the M7's update service, with signature and stale-upload
+  handling;
+- updates the M7 through MCUboot, marking it by its image hash;
+- reboots, reboots once more if the M7 changed so the two cores pair again, and
+  reads back the installed versions and the running M7 image hash.
+
+The bootloader is overwrite-only, so there is no trial boot and nothing to confirm
+afterwards. A single signed M7 `.bin` can also be installed, for development builds.
+Updating over Wi-Fi needs an SMP relay that the ESP32 firmware does not have yet,
+so that option is shown but disabled. The device side of the update system
+(MCUboot, bundles, serial recovery) is documented in
 [`healthypi-6-fw`](https://github.com/protocentral/healthypi-6-fw).
 
 > ### ⚠️ Firmware update is beta
 >
-> The staged image is now read back and its hash checked against the file before
-> anything is marked for boot, and **Confirm firmware** under Maintenance confirms
-> the running image once the board is back — until you do, MCUboot reverts on the
-> next reboot. Still missing: per-chunk retry, and a reset timeout is treated as
-> success. Keep the board connected for the whole flash, and prefer USB over Wi-Fi.
+> It has been checked against a simulated device, not yet on hardware. Keep the
+> board connected for the whole update. Studio currently trusts only the
+> development signing key.
 
 ---
 
