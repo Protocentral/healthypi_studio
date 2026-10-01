@@ -1,0 +1,72 @@
+{
+  "tool_version": "0.1.0",
+  "file_version": "0x0300",
+  "dblk_header_len": 28,
+  "dblk_crc_len": 4,
+  "channels": {
+    "ECG": 1,
+    "PPG": 2,
+    "RESP": 3,
+    "VITALS": 4,
+    "EEG": 5,
+    "EVENT": 6,
+    "SYNC": 7,
+    "INFER": 8
+  },
+  "payloads": {
+    "ECG": {
+      "channel": 1,
+      "size": 20,
+      "struct": "<4iBBH"
+    },
+    "PPG": {
+      "channel": 2,
+      "size": 12,
+      "struct": "<2iB3x"
+    },
+    "VITALS": {
+      "channel": 4,
+      "size": 16,
+      "struct": "<HHHhHHHBx"
+    },
+    "EEG": {
+      "channel": 5,
+      "size": 36,
+      "struct": "<8iB3x"
+    },
+    "EVENT": {
+      "channel": 6,
+      "size": 8,
+      "struct": "<IHH"
+    },
+    "SYNC": {
+      "channel": 7,
+      "size": 40,
+      "struct": "<IIQIIIIII"
+    },
+    "INFER": {
+      "channel": 8,
+      "size": 16,
+      "struct": "<IHBB5bB2x"
+    }
+  },
+  "flags": {
+    "lead_off": {
+      "RA": 1,
+      "LA": 2,
+      "LL": 4,
+      "V1": 8
+    },
+    "vitals": {
+      "HR_FROM_PPG": 1,
+      "ECG_LEAD_OFF": 2,
+      "PPG_WEAK": 4,
+      "MOTION": 8
+    },
+    "infer": {
+      "STUB": 1,
+      "LOW_CONF": 2,
+      "ECG_SUSPECT": 4
+    }
+  }
+}

@@ -1,0 +1,1267 @@
+{
+  "tool_version": "0.1.0",
+  "group_id": 64,
+  "schema_version": 2,
+  "commands": [
+    {
+      "id": "0x0001",
+      "name": "device_info",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "sn",
+          "type": "tstr",
+          "doc": "serial number"
+        },
+        {
+          "name": "fw",
+          "type": "tstr",
+          "doc": "M7 firmware version"
+        },
+        {
+          "name": "gv",
+          "type": "uint",
+          "doc": "group schema version"
+        },
+        {
+          "name": "br",
+          "type": "tstr",
+          "doc": "board revision"
+        },
+        {
+          "name": "hw",
+          "type": "bstr",
+          "doc": "hardware id blob"
+        },
+        {
+          "name": "m4fw",
+          "type": "tstr"
+        },
+        {
+          "name": "espfw",
+          "type": "tstr"
+        },
+        {
+          "name": "up",
+          "type": "uint",
+          "doc": "uptime, seconds"
+        }
+      ]
+    },
+    {
+      "id": "0x0010",
+      "name": "unlock_challenge",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "nonce",
+          "type": "bstr"
+        },
+        {
+          "name": "ttl_ms",
+          "type": "uint"
+        }
+      ],
+      "doc": "ENOTSUP when no unlock secret is provisioned"
+    },
+    {
+      "id": "0x0011",
+      "name": "unlock_response",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "tag",
+          "type": "bstr",
+          "doc": "HMAC over the challenge nonce"
+        }
+      ],
+      "response": [
+        {
+          "name": "state",
+          "type": "uint"
+        },
+        {
+          "name": "ttl_ms",
+          "type": "uint",
+          "doc": "grant remaining"
+        }
+      ],
+      "errors": [
+        264,
+        265,
+        266
+      ]
+    },
+    {
+      "id": "0x0012",
+      "name": "lock",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "state",
+          "type": "uint"
+        }
+      ]
+    },
+    {
+      "id": "0x0013",
+      "name": "lock_state",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "state",
+          "type": "uint"
+        }
+      ]
+    },
+    {
+      "id": "0x0020",
+      "name": "stream_start",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "ch",
+          "type": "uint",
+          "doc": "channel mask, masked to 0x0F"
+        },
+        {
+          "name": "ann",
+          "type": "uint",
+          "doc": "annotation mask, masked to 0x1F"
+        }
+      ],
+      "errors": [
+        258
+      ],
+      "doc": "empty response on success; data lands on CDC0"
+    },
+    {
+      "id": "0x0021",
+      "name": "stream_stop",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "doc": "idempotent"
+    },
+    {
+      "id": "0x0022",
+      "name": "stream_status",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "active",
+          "type": "bool"
+        },
+        {
+          "name": "ch",
+          "type": "uint"
+        },
+        {
+          "name": "ann",
+          "type": "uint"
+        },
+        {
+          "name": "sent",
+          "type": "uint"
+        },
+        {
+          "name": "dropped",
+          "type": "uint"
+        }
+      ]
+    },
+    {
+      "id": "0x0030",
+      "name": "telemetry",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "vbat_mv",
+          "type": "uint"
+        },
+        {
+          "name": "ibat_ma",
+          "type": "int"
+        },
+        {
+          "name": "soc",
+          "type": "uint",
+          "doc": "state of charge, %"
+        },
+        {
+          "name": "tc_x10",
+          "type": "int",
+          "doc": "always the unavailable sentinel in 1.0.0"
+        },
+        {
+          "name": "charge",
+          "type": "uint"
+        },
+        {
+          "name": "usb",
+          "type": "bool",
+          "doc": "input supply present (charger PGOOD)"
+        },
+        {
+          "name": "batt",
+          "type": "bool",
+          "doc": "literally !usb"
+        },
+        {
+          "name": "usb_att",
+          "type": "bool",
+          "optional": true,
+          "doc": "a USB host is enumerated -- NOT the same as usb"
+        },
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "0x0031",
+      "name": "fw_versions",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "m7fw",
+          "type": "tstr"
+        },
+        {
+          "name": "m4fw",
+          "type": "tstr"
+        },
+        {
+          "name": "espfw",
+          "type": "tstr"
+        },
+        {
+          "name": "mod_a_fw",
+          "type": "tstr"
+        },
+        {
+          "name": "mod_b_fw",
+          "type": "tstr"
+        }
+      ]
+    },
+    {
+      "id": "0x0050",
+      "name": "module_list",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "a",
+          "type": "map",
+          "doc": "slot A",
+          "nested": [
+            {
+              "name": "state",
+              "type": "uint"
+            },
+            {
+              "name": "id",
+              "type": "uint"
+            },
+            {
+              "name": "pwr",
+              "type": "bool"
+            },
+            {
+              "name": "name",
+              "type": "tstr"
+            }
+          ]
+        },
+        {
+          "name": "b",
+          "type": "map",
+          "doc": "slot B",
+          "nested": [
+            {
+              "name": "state",
+              "type": "uint"
+            },
+            {
+              "name": "id",
+              "type": "uint"
+            },
+            {
+              "name": "pwr",
+              "type": "bool"
+            },
+            {
+              "name": "name",
+              "type": "tstr"
+            }
+          ]
+        }
+      ],
+      "doc": "keyed by slot, NOT an array"
+    },
+    {
+      "id": "0x0051",
+      "name": "module_info",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0052",
+      "name": "module_power",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "slot",
+          "type": "uint"
+        },
+        {
+          "name": "on",
+          "type": "bool"
+        }
+      ],
+      "response": [
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "0x0053",
+      "name": "module_eeprom_read",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "slot",
+          "type": "uint",
+          "doc": "0 = A, 1 = B"
+        },
+        {
+          "name": "off",
+          "type": "uint",
+          "doc": "byte offset into the 256-byte image"
+        },
+        {
+          "name": "len",
+          "type": "uint",
+          "doc": "1-64"
+        }
+      ],
+      "response": [
+        {
+          "name": "off",
+          "type": "uint"
+        },
+        {
+          "name": "data",
+          "type": "bstr"
+        }
+      ],
+      "errors": [
+        256,
+        257
+      ],
+      "doc": "raw bytes; the device does not parse the image"
+    },
+    {
+      "id": "0x0054",
+      "name": "module_eeprom_write",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "slot",
+          "type": "uint",
+          "doc": "0 = A, 1 = B"
+        },
+        {
+          "name": "off",
+          "type": "uint"
+        },
+        {
+          "name": "data",
+          "type": "bstr",
+          "doc": "1-64 bytes"
+        }
+      ],
+      "response": [
+        {
+          "name": "off",
+          "type": "uint"
+        },
+        {
+          "name": "len",
+          "type": "uint"
+        }
+      ],
+      "errors": [
+        256,
+        257
+      ],
+      "doc": "identity takes effect at the next detect (module_power on)"
+    },
+    {
+      "id": "0x0055",
+      "name": "module_i2c_scan",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "slot",
+          "type": "uint",
+          "doc": "0 = A, 1 = B"
+        },
+        {
+          "name": "pwr",
+          "type": "bool",
+          "optional": true,
+          "doc": "scan with the slot rail on"
+        }
+      ],
+      "response": [
+        {
+          "name": "addrs",
+          "type": "bstr",
+          "doc": "responding 7-bit addresses"
+        }
+      ],
+      "errors": [
+        256,
+        257
+      ],
+      "doc": "bring-up: both slots share one bus, so this says whether it works"
+    },
+    {
+      "id": "0x0060",
+      "name": "sd_status",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "active",
+          "type": "bool"
+        },
+        {
+          "name": "bytes",
+          "type": "uint"
+        },
+        {
+          "name": "dur",
+          "type": "uint",
+          "doc": "ms"
+        },
+        {
+          "name": "ecg",
+          "type": "uint",
+          "doc": "samples"
+        },
+        {
+          "name": "ppg",
+          "type": "uint",
+          "doc": "samples"
+        },
+        {
+          "name": "path",
+          "type": "tstr"
+        }
+      ]
+    },
+    {
+      "id": "0x0061",
+      "name": "sd_record_start",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "name",
+          "type": "tstr",
+          "optional": true,
+          "doc": "session name"
+        }
+      ],
+      "response": [
+        {
+          "name": "path",
+          "type": "tstr"
+        }
+      ],
+      "errors": [
+        256
+      ],
+      "doc": "256 covers BOTH already-recording and no-card; call sd_status to tell them apart"
+    },
+    {
+      "id": "0x0062",
+      "name": "sd_record_stop",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0063",
+      "name": "sd_list",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0064",
+      "name": "sd_download_begin",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0065",
+      "name": "sd_download_chunk",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0066",
+      "name": "sd_download_end",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0067",
+      "name": "sd_delete",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0068",
+      "name": "sd_format",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0069",
+      "name": "transfer_mode",
+      "ops": [
+        "read",
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "armed",
+          "type": "bool"
+        }
+      ],
+      "write_request": [
+        {
+          "name": "on",
+          "type": "bool"
+        }
+      ],
+      "write_response": [
+        {
+          "name": "armed",
+          "type": "bool"
+        }
+      ],
+      "errors": [
+        267,
+        257
+      ],
+      "doc": "arming re-enumerates USB and kills the open CDC1 connection"
+    },
+    {
+      "id": "0x0070",
+      "name": "wifi_status",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "state",
+          "type": "uint"
+        },
+        {
+          "name": "rssi",
+          "type": "int"
+        },
+        {
+          "name": "ssid",
+          "type": "tstr"
+        },
+        {
+          "name": "ip",
+          "type": "tstr"
+        }
+      ],
+      "errors": [
+        257
+      ]
+    },
+    {
+      "id": "0x0071",
+      "name": "wifi_scan",
+      "ops": [
+        "read"
+      ],
+      "status": "stub",
+      "unlock": false,
+      "signed_build": false,
+      "doc": "always ENOTSUP: provisioning goes through the SoftAP portal"
+    },
+    {
+      "id": "0x0072",
+      "name": "wifi_set",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "ssid",
+          "type": "tstr"
+        },
+        {
+          "name": "pw",
+          "type": "tstr"
+        }
+      ],
+      "response": [
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "0x0073",
+      "name": "wifi_forget",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "id": "0x0074",
+      "name": "wifi_softap",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ],
+      "errors": [
+        257
+      ],
+      "doc": "deliberately NOT unlock-gated: it is how a locked device gets online"
+    },
+    {
+      "id": "0x0075",
+      "name": "conn_enable",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "request": [
+        {
+          "name": "radios",
+          "type": "uint"
+        }
+      ],
+      "response": [
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ],
+      "errors": [
+        257
+      ],
+      "doc": "radios bitmask: bit0 WiFi, bit1 BLE; 0 = powered with no radio (needed to flash the C6, which cannot enumerate while held in reset). Answers 'accepted', not 'radio up' -- poll conn_status for the outcome"
+    },
+    {
+      "id": "0x0076",
+      "name": "conn_disable",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "ok",
+          "type": "bool"
+        }
+      ],
+      "doc": "radios down and the co-processor back into reset"
+    },
+    {
+      "id": "0x0077",
+      "name": "conn_status",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "link",
+          "type": "uint"
+        },
+        {
+          "name": "radios",
+          "type": "uint"
+        },
+        {
+          "name": "state",
+          "type": "uint"
+        },
+        {
+          "name": "rssi",
+          "type": "int"
+        },
+        {
+          "name": "ssid",
+          "type": "tstr"
+        },
+        {
+          "name": "ip",
+          "type": "tstr"
+        },
+        {
+          "name": "ble_adv",
+          "type": "bool"
+        },
+        {
+          "name": "ble_conn",
+          "type": "bool"
+        }
+      ],
+      "doc": "link: 0 off (by request) 1 starting 2 up 3 fault -- the distinction wifi_status cannot express, between a radio that is off because it was asked to be and a co-processor that should be answering and is not"
+    },
+    {
+      "id": "0x0080",
+      "name": "diag_run_selftest",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "suite_ver",
+          "type": "uint"
+        },
+        {
+          "name": "sd",
+          "type": "bool"
+        },
+        {
+          "name": "batt",
+          "type": "bool"
+        },
+        {
+          "name": "ecg",
+          "type": "bool"
+        },
+        {
+          "name": "ppg",
+          "type": "bool"
+        },
+        {
+          "name": "m4",
+          "type": "bool"
+        },
+        {
+          "name": "qspi",
+          "type": "bool"
+        },
+        {
+          "name": "pass",
+          "type": "uint"
+        },
+        {
+          "name": "fail",
+          "type": "uint"
+        },
+        {
+          "name": "health_overall",
+          "type": "uint"
+        },
+        {
+          "name": "health",
+          "type": "map",
+          "doc": "per-subsystem state",
+          "nested": [
+            {
+              "name": "acq",
+              "type": "uint"
+            },
+            {
+              "name": "m4",
+              "type": "uint"
+            },
+            {
+              "name": "stream",
+              "type": "uint"
+            },
+            {
+              "name": "rec",
+              "type": "uint"
+            },
+            {
+              "name": "hl",
+              "type": "uint"
+            }
+          ]
+        }
+      ],
+      "doc": "`health` is a NESTED map; top-level `m4` (bool) differs from health.m4 (uint)"
+    },
+    {
+      "id": "0x0081",
+      "name": "diag_lead_off",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "mask",
+          "type": "uint",
+          "doc": "electrode bits: 1 RA, 2 LA, 4 LL, 8 V1"
+        },
+        {
+          "name": "ra",
+          "type": "bool",
+          "doc": "RA electrode is off"
+        },
+        {
+          "name": "la",
+          "type": "bool"
+        },
+        {
+          "name": "ll",
+          "type": "bool"
+        },
+        {
+          "name": "v1",
+          "type": "bool"
+        },
+        {
+          "name": "age_ms",
+          "type": "uint",
+          "doc": "since acquisition last updated the mask"
+        },
+        {
+          "name": "ok",
+          "type": "bool",
+          "doc": "the state is fresh (the ECG front end is live)"
+        },
+        {
+          "name": "hr",
+          "type": "uint",
+          "doc": "last heart rate, 0 = none"
+        },
+        {
+          "name": "hr_src",
+          "type": "uint",
+          "doc": "0 = ECG, 1 = PPG"
+        },
+        {
+          "name": "vflags",
+          "type": "uint",
+          "doc": "raw hp6_vitals.flags"
+        }
+      ],
+      "doc": "a large age_ms means the ECG went quiet -- NOT the same as leads on"
+    },
+    {
+      "id": "0x0082",
+      "name": "diag_signal_stats",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0090",
+      "name": "log_subscribe",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0091",
+      "name": "log_unsubscribe",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x0092",
+      "name": "log_get_buffered",
+      "ops": [],
+      "status": "unreachable",
+      "unlock": false,
+      "signed_build": false
+    },
+    {
+      "id": "0x00A0",
+      "name": "m4fw_begin",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": true,
+      "request": [
+        {
+          "name": "len",
+          "type": "uint",
+          "doc": "image size"
+        },
+        {
+          "name": "sha",
+          "type": "bstr",
+          "doc": "SHA-256 of the image"
+        },
+        {
+          "name": "sig",
+          "type": "bstr",
+          "optional": true,
+          "doc": "ECDSA-P256 r||s"
+        }
+      ],
+      "errors": [
+        256,
+        269,
+        270
+      ]
+    },
+    {
+      "id": "0x00A1",
+      "name": "m4fw_chunk",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": true,
+      "request": [
+        {
+          "name": "off",
+          "type": "uint"
+        },
+        {
+          "name": "data",
+          "type": "bstr"
+        }
+      ],
+      "response": [
+        {
+          "name": "off",
+          "type": "uint",
+          "doc": "next expected offset"
+        }
+      ],
+      "errors": [
+        256,
+        260
+      ]
+    },
+    {
+      "id": "0x00A2",
+      "name": "m4fw_commit",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": true,
+      "response": [
+        {
+          "name": "rst",
+          "type": "bool",
+          "doc": "a reset is required"
+        }
+      ],
+      "errors": [
+        268,
+        269,
+        270,
+        271
+      ]
+    },
+    {
+      "id": "0x00A3",
+      "name": "m4fw_status",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": true,
+      "response": [
+        {
+          "name": "st",
+          "type": "uint",
+          "doc": "state"
+        },
+        {
+          "name": "len",
+          "type": "uint",
+          "doc": "total size"
+        },
+        {
+          "name": "rx",
+          "type": "uint",
+          "doc": "bytes received"
+        },
+        {
+          "name": "err",
+          "type": "int"
+        },
+        {
+          "name": "rst",
+          "type": "bool",
+          "doc": "reset required"
+        },
+        {
+          "name": "sig",
+          "type": "bool",
+          "doc": "this firmware requires a signature"
+        }
+      ],
+      "doc": "call FIRST: `sig` says whether an unsigned upload will be rejected"
+    },
+    {
+      "id": "0x00A4",
+      "name": "m4fw_abort",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": true
+    },
+    {
+      "id": "0x00A5",
+      "name": "enter_recovery",
+      "ops": [
+        "read",
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": false,
+      "response": [
+        {
+          "name": "av",
+          "type": "bool",
+          "doc": "available"
+        },
+        {
+          "name": "armed",
+          "type": "bool"
+        }
+      ],
+      "write_request": [
+        {
+          "name": "arm",
+          "type": "bool"
+        },
+        {
+          "name": "rst",
+          "type": "bool",
+          "doc": "reset now"
+        }
+      ],
+      "write_response": [
+        {
+          "name": "armed",
+          "type": "bool"
+        },
+        {
+          "name": "rst",
+          "type": "bool",
+          "doc": "will reset"
+        }
+      ],
+      "errors": [
+        256
+      ],
+      "doc": "reboots into MCUboot serial recovery; group 64 disappears until reflash"
+    }
+  ],
+  "errors": {
+    "256": "NOT_READY",
+    "257": "HW_FAULT",
+    "258": "CHANNEL_NOT_AVAILABLE",
+    "259": "INSUFFICIENT_STORAGE",
+    "260": "TRANSFER_INVALID",
+    "261": "VERSION_MISMATCH",
+    "262": "CONFIG_KEY_UNKNOWN",
+    "263": "CONFIG_TYPE_MISMATCH",
+    "264": "LOCK_CHALLENGE_MISSING",
+    "265": "LOCK_HMAC_INVALID",
+    "266": "LOCK_EXPIRED",
+    "267": "NO_MEDIA",
+    "268": "IMAGE_INVALID",
+    "269": "IMAGE_TOO_LARGE",
+    "270": "BUSY",
+    "271": "IMAGE_NOT_M4"
+  },
+  "error_hints": {
+    "256": "busy, or a prerequisite is missing (no card, dev build)",
+    "257": "hardware or co-processor link failure",
+    "258": "this device cannot produce that stream channel",
+    "259": "not enough space",
+    "260": "transfer state is invalid",
+    "261": "version mismatch",
+    "262": "unknown settings key",
+    "263": "settings value has the wrong type",
+    "264": "unlock_response without a prior challenge",
+    "265": "wrong unlock secret",
+    "266": "challenge or grant TTL elapsed",
+    "267": "no SD card present",
+    "268": "digest or signature mismatch",
+    "269": "exceeds staging or bank 2",
+    "270": "an update is already in flight",
+    "271": "verifies, but is not an M4 image"
+  },
+  "stock_errors": {
+    "0": {
+      "0": "OK",
+      "1": "UNKNOWN",
+      "2": "INVALID_FORMAT",
+      "3": "QUERY_YIELDS_NO_ANSWER",
+      "4": "RTC_NOT_SET",
+      "5": "RTC_COMMAND_FAILED",
+      "6": "QUERY_RESPONSE_VALUE_NOT_VALID",
+      "7": "HEAP_STATS_FETCH_FAILED"
+    }
+  }
+}

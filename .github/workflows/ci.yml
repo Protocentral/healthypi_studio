@@ -38,6 +38,13 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # Blocking. lib/protocol/*.g.dart is generated from the firmware catalog
+      # snapshots in protocol/; a hand edit or a stale regeneration fails here.
+      - name: Protocol definitions are up to date
+        run: |
+          dart run tool/gen_protocol.dart
+          git diff --exit-code -- lib/protocol/
+
       # Blocking. The project holds at zero errors and zero warnings; the 107
       # remaining `info` lints are pre-existing style nits, so infos are not fatal.
       - name: Analyze
