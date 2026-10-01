@@ -181,8 +181,7 @@ class DeviceScreenState extends State<DeviceScreen> {
 
     try {
       // Free the link: the stream would otherwise compete with the upload.
-      client.streamStop();
-      await Future<void>.delayed(const Duration(milliseconds: 200));
+      await client.streamStop();
 
       _set('Uploading M7 image…');
       final m7 = Uint8List.fromList(await File(_m7Path!).readAsBytes());
@@ -655,14 +654,16 @@ class _FirmwareColumn extends StatelessWidget {
                   icon: Icons.play_arrow,
                   title: 'Start device stream',
                   onTap: usb.controlConnected && !state._busy
-                      ? () => usb.control.streamStart()
+                      ? () => _report(context, usb.setDeviceStreaming(true),
+                          'Device stream started')
                       : null,
                 ),
                 HpiActionRow(
                   icon: Icons.stop,
                   title: 'Stop device stream',
                   onTap: usb.controlConnected && !state._busy
-                      ? () => usb.control.streamStop()
+                      ? () => _report(context, usb.setDeviceStreaming(false),
+                          'Device stream stopped')
                       : null,
                 ),
                 HpiActionRow(
@@ -671,7 +672,12 @@ class _FirmwareColumn extends StatelessWidget {
                       ? 'Stop on-board recording'
                       : 'Start on-board recording',
                   onTap: usb.controlConnected && !state._busy
-                      ? () => usb.setDeviceRecording(!usb.deviceRecording)
+                      ? () => _report(
+                          context,
+                          usb.setDeviceRecording(!usb.deviceRecording),
+                          usb.deviceRecording
+                              ? 'On-board recording stopped'
+                              : 'On-board recording started')
                       : null,
                 ),
                 const HpiRule(),
@@ -686,6 +692,17 @@ class _FirmwareColumn extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Show the device's answer to a control command: the failure by name, or
+/// [success].
+Future<void> _report(
+    BuildContext context, Future<HpiFailure?> result, String success) async {
+  final failure = await result;
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(
+    SnackBar(content: Text(failure == null ? success : failure.toString())),
+  );
 }
 
 class _FileRow extends StatelessWidget {

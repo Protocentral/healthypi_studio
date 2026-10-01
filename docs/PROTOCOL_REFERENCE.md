@@ -121,7 +121,7 @@ Studio talks to the device's control plane over MCUmgr **Simple Management Proto
 ```
 0x06 0x09  <base64( 2-byte big-endian length  ||  SMP header+payload  ||  CRC16-XMODEM )>  0x0A
 ```
-Continuation lines use the `0x04 0x14` start marker. CBOR body; the hand-rolled encoder/decoder handles map-of-{int,text,bool,bytes}. (See [smp_serial_client.dart](../lib/services/smp_serial_client.dart).)
+Continuation lines use the `0x04 0x14` start marker. CBOR body. Framing, CBOR and request/reply matching (on seq, group and id) are `mcumgr_dart`'s; HealthyPi's group 64 is in [smp_serial_client.dart](../lib/services/smp_serial_client.dart), with command ids, request maps, typed replies and error names generated from the firmware catalog into `lib/protocol/hpi_group64.g.dart` (see DEVELOPER_GUIDE §3).
 
 ### 3.2 SMP commands implemented in Studio today
 
@@ -130,9 +130,13 @@ Continuation lines use the `0x04 0x14` start marker. CBOR body; the hand-rolled 
 | 0 (OS) | 5 | reset (reboot to MCUboot) | `osReset()` | timeout treated as success |
 | 1 (Image) | 1 | image upload (chunked) | `imageUpload()` | yes — device returns next offset |
 | 1 (Image) | 0 | image test / mark-pending (`confirm:false`) | `imageTest(sha)` | yes |
-| 64 (vendor `hpi`) | 0x20/0x21 | stream start/stop (`ch`,`ann`) | `streamStart()/streamStop()` | fire-and-forget |
-| 64 | 0x61/0x62 | SD record start/stop | — | fire-and-forget |
-| 64 | 0x69 | USB MSC transfer mode | `transferMode(on)` | fire-and-forget |
+| 64 (vendor `hpi`) | 0x20/0x21 | stream start/stop (`ch`,`ann`) | `streamStart()/streamStop()` | yes — 258 CHANNEL_NOT_AVAILABLE surfaced |
+| 64 | 0x22 | stream status | `streamStatus()` | yes |
+| 64 | 0x60 | SD status | `sdStatus()` | yes |
+| 64 | 0x61/0x62 | SD record start/stop | `sdRecordStart()/sdRecordStop()` | yes — `path`, or 256 NOT_READY (no card / already recording) |
+| 64 | 0x69 | USB MSC transfer mode | `transferMode(on)` | yes — `armed`, or 267 NO_MEDIA / 257 |
+
+Every group-64 call returns an `HpiResult`: the typed reply, or an `HpiFailure` naming the catalog error (`NO_MEDIA — no SD card present`). UI state such as "device recording" follows the reply, not the request.
 
 **OTA flow:** upload (128-byte chunks, first chunk carries `image`/`len`/`sha`) → `imageTest` (mark pending) → `osReset` (reboot into MCUboot, which swaps). Dual-image supported (image index 0/1; M7 required, M4 optional).
 
@@ -143,7 +147,6 @@ The firmware host-interface contract (STUDIO_INTEGRATION_NOTES / DUAL_CDC plan) 
 | IDs | Feature | FW phase |
 |---|---|---|
 | `0x0001` | device_info (sn, fw, channels) | 2 |
-| `0x0022` | stream_status | 2 |
 | `0x0030/0x0031` | telemetry / fw_versions | 2 |
 | `0x0010–0x0013` | unlock/lock (security) | 11 |
 | `0x0050–0x0052` | HealthyLink modules | 4 |

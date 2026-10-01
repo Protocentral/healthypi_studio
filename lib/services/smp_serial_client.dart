@@ -7,6 +7,8 @@ import 'package:crypto/crypto.dart' as crypto;
 import 'package:flutter/foundation.dart';
 import 'package:mcumgr_dart/mcumgr_dart.dart';
 
+import '../protocol/hpi_command.dart';
+import '../protocol/hpi_group64.g.dart';
 import 'smp/byte_stream_transport.dart';
 import 'smp/serial_transport.dart';
 import 'smp/tcp_transport.dart';
@@ -18,26 +20,21 @@ import 'smp/tcp_transport.dart';
 /// groups — lives in `mcumgr_dart`; the `uart_mcumgr` encapsulation both links
 /// carry is in its `UartMcumgrCodec`, wrapped by the transports in `smp/`. What
 /// remains here is HealthyPi's own surface: the **group-64** control commands,
-/// which are vendor-specific, and the two-image update sequence.
+/// whose ids, request maps and replies are generated from the firmware catalog
+/// (`lib/protocol/hpi_group64.g.dart`), and the update sequence.
 ///
-/// Two modes, unchanged from the hand-rolled client this replaces:
-///  - Fire-and-forget writes for the group-64 commands (stream / record /
-///    transfer-mode). The device does not answer them, so nothing is awaited.
-///  - Request/response transactions for **firmware OTA**, which need the
-///    device's reply — the next offset it expects, and the result code.
+/// Every group-64 command goes through the same `SmpClient` as the img and os
+/// groups and its reply is read: the device answers each one, and an error
+/// such as NO_MEDIA or a locked device is reported by name instead of the UI
+/// assuming success.
 class SmpSerialClient {
   ByteStreamSmpTransport? _transport;
   SmpClient? _client;
-
-  /// Sequence numbers for the fire-and-forget group-64 writes. `SmpClient`
-  /// keeps its own counter for the requests it matches replies to; these are
-  /// never answered, so the two spaces cannot collide in a way that matters.
-  int _controlSeq = 0;
   ImgMgmt? _img;
   OsMgmt? _os;
 
   /// HealthyPi's vendor management group.
-  static const int controlGroup = 64;
+  static const int controlGroup = hpiGroupId;
 
   /// Data bytes per upload request. Kept for callers that display it; the value
   /// now comes from `ImgMgmt`, sized by the transport's `maxWriteLength`.
@@ -110,47 +107,91 @@ class SmpSerialClient {
     unawaited(transport?.disconnect());
   }
 
-  // ---- group 64 control commands (fire-and-forget) ----
+  // ---- group 64 control commands ----
 
-  /// The device does not answer these, so there is nothing to await. Returns
-  /// whether the request reached the wire.
-  bool _writeRequest(int id, Map<String, Object?> payload) {
-    final ByteStreamSmpTransport? transport = _transport;
-    if (transport == null || !isOpen) return false;
+  /// Send [command] and read its reply. [write] picks the SMP op for a command
+  /// that supports both; otherwise the command's only op is used.
+  Future<HpiResult<Map<String, Object?>>> request(
+    HpiCommand command, {
+    Map<String, Object?> payload = const {},
+    bool? write,
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final SmpClient? client = _client;
+    if (client == null || !isOpen) {
+      return HpiResult.failed(HpiFailure.notConnected(command));
+    }
+    final bool useWrite = write ?? !command.read;
+    if (useWrite ? !command.write : !command.read) {
+      throw ArgumentError('$command has no ${useWrite ? "write" : "read"} op');
+    }
+    client.timeout = timeout;
     try {
-      final SmpMessage req = SmpMessage(
-        op: SmpOp.writeReq,
+      final SmpMessage rsp = await client.send(
+        op: useWrite ? SmpOp.writeReq : SmpOp.readReq,
         group: controlGroup,
-        id: id,
-        seq: _controlSeq = (_controlSeq + 1) & 0xFF,
+        id: command.id,
         payload: payload,
       );
-      unawaited(transport.write(req.toBytes()).catchError((Object e) {
-        debugPrint('❌ SMP write failed: $e');
-      }));
-      return true;
-    } catch (e) {
-      debugPrint('❌ SMP write failed: $e');
-      return false;
+      final int? rc = rsp.rc;
+      if (rc != null) {
+        final failure = HpiFailure.fromReply(command, rc, rsp.errGroup);
+        debugPrint('⚠️ $command: ${failure.label}');
+        return HpiResult.failed(failure);
+      }
+      return HpiResult.ok(rsp.payload);
+    } on SmpException catch (e) {
+      debugPrint('❌ $command: $e');
+      return HpiResult.failed(HpiFailure.transport(command, e));
     }
   }
 
-  bool streamStart({int ch = 0x03, int ann = 0x00}) =>
-      _writeRequest(0x20, <String, Object?>{'ch': ch, 'ann': ann});
+  Future<HpiResult<T>> _typed<T>(
+    HpiCommand command,
+    T Function(Map<Object?, Object?>) parse, {
+    Map<String, Object?> payload = const {},
+    bool? write,
+    Duration timeout = const Duration(seconds: 3),
+  }) async {
+    final r = await request(command,
+        payload: payload, write: write, timeout: timeout);
+    return r.map(parse);
+  }
 
-  bool streamStop() => _writeRequest(0x21, const <String, Object?>{});
+  /// Start the CDC0 stream. Fails with CHANNEL_NOT_AVAILABLE (258) when the
+  /// device cannot produce a requested channel.
+  Future<HpiResult<void>> streamStart({int ch = 0x03, int ann = 0x00}) =>
+      request(Hpi.streamStart, payload: streamStartRequest(ch: ch, ann: ann));
 
-  bool sdRecordStart({String? name}) => _writeRequest(
-        0x61,
-        (name == null || name.isEmpty)
-            ? const <String, Object?>{}
-            : <String, Object?>{'name': name},
+  Future<HpiResult<void>> streamStop(
+          {Duration timeout = const Duration(seconds: 3)}) =>
+      request(Hpi.streamStop, timeout: timeout);
+
+  Future<HpiResult<StreamStatusReply>> streamStatus() =>
+      _typed(Hpi.streamStatus, StreamStatusReply.fromMap);
+
+  /// Start an SD recording. The reply carries the file path; NOT_READY (256)
+  /// means already recording or no card — [sdStatus] tells them apart.
+  Future<HpiResult<SdRecordStartReply>> sdRecordStart({String? name}) => _typed(
+        Hpi.sdRecordStart,
+        SdRecordStartReply.fromMap,
+        payload: sdRecordStartRequest(
+            name: (name == null || name.isEmpty) ? null : name),
       );
 
-  bool sdRecordStop() => _writeRequest(0x62, const <String, Object?>{});
+  Future<HpiResult<void>> sdRecordStop() => request(Hpi.sdRecordStop);
 
-  bool transferMode(bool on) =>
-      _writeRequest(0x69, <String, Object?>{'on': on});
+  Future<HpiResult<SdStatusReply>> sdStatus() =>
+      _typed(Hpi.sdStatus, SdStatusReply.fromMap);
+
+  /// Arm or disarm USB Transfer Mode. Arming re-enumerates USB, so the reply
+  /// may be the last thing this link carries.
+  Future<HpiResult<TransferModeWriteReply>> transferMode(bool on) => _typed(
+        Hpi.transferMode,
+        TransferModeWriteReply.fromMap,
+        payload: transferModeWriteRequest(on: on),
+        write: true,
+      );
 
   // ---- firmware update ----
 
@@ -285,5 +326,66 @@ class SmpSerialClient {
       // reset happened, not that it failed.
       return true;
     }
+  }
+}
+
+/// Why a group-64 request did not succeed.
+class HpiFailure {
+  const HpiFailure._(this.command, this.message, {this.rc, this.group});
+
+  factory HpiFailure.notConnected(HpiCommand command) =>
+      HpiFailure._(command, 'control port not open');
+
+  factory HpiFailure.transport(HpiCommand command, SmpException e) =>
+      HpiFailure._(command,
+          e.message.contains('timed out') ? 'no reply from the device' : e.message);
+
+  factory HpiFailure.fromReply(HpiCommand command, int rc, int? group) =>
+      HpiFailure._(command, 'rc $rc', rc: rc, group: group);
+
+  final HpiCommand command;
+  final String message;
+
+  /// The device's result code, when it answered with an error.
+  final int? rc;
+
+  /// The group that raised [rc] (SMP v2), when reported.
+  final int? group;
+
+  /// The catalog entry for a group-64 error code.
+  HpiErrorCode? get code =>
+      rc != null && (group == null || group == hpiGroupId) ? hpiErrors[rc] : null;
+
+  /// A short, user-facing description, e.g. `NO_MEDIA — no SD card present`.
+  String get label {
+    final c = code;
+    if (c != null) return c.hint.isEmpty ? c.name : '${c.name} — ${c.hint}';
+    if (rc != null) {
+      final stock = hpiStockErrors[group ?? -1]?[rc];
+      if (stock != null) return stock;
+      if (rc == 8) return 'not supported by this firmware';
+      return 'error $rc';
+    }
+    return message;
+  }
+
+  @override
+  String toString() => '$command: $label';
+}
+
+/// The outcome of a group-64 request: the parsed reply, or why it failed.
+class HpiResult<T> {
+  const HpiResult.ok(T this.value) : failure = null;
+  const HpiResult.failed(HpiFailure this.failure) : value = null;
+
+  final T? value;
+  final HpiFailure? failure;
+
+  bool get ok => failure == null;
+
+  HpiResult<R> map<R>(R Function(Map<Object?, Object?>) parse) {
+    final f = failure;
+    if (f != null) return HpiResult.failed(f);
+    return HpiResult.ok(parse(value as Map<Object?, Object?>));
   }
 }

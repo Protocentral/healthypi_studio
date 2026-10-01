@@ -26,6 +26,22 @@ class UsbSerialService extends ChangeNotifier {
   bool get transferArmed => _transferArmed;
   bool get deviceRecording => _deviceRecording;
 
+  /// Path the device reported for the current SD recording.
+  String? get deviceRecordingPath => _deviceRecordingPath;
+  String? _deviceRecordingPath;
+
+  /// The last control command the device refused or did not answer, for the
+  /// status line. Cleared by the next command that succeeds.
+  HpiFailure? get lastControlFailure => _lastControlFailure;
+  HpiFailure? _lastControlFailure;
+
+  void _noteControl(HpiResult<Object?> r) {
+    final next = r.failure;
+    if (next == null && _lastControlFailure == null) return;
+    _lastControlFailure = next;
+    notifyListeners();
+  }
+
   StreamSubscription<Uint8List>? _dataSubscription;
   final StreamController<String> _dataStreamController = StreamController<String>.broadcast();
   final StreamController<Uint8List> _binaryDataStreamController = StreamController<Uint8List>.broadcast();
@@ -375,16 +391,17 @@ class UsbSerialService extends ChangeNotifier {
     }
     _dataSubscription = null;
 
-    // Stop the stream on the control pipe, then close it.
-    try {
-      if (_control.isOpen) {
-        _control.streamStop();
-      }
-    } catch (e) {
-      debugPrint('Error sending stream_stop: $e');
+    // Stop the stream on the control pipe, then close it. Bounded: a board
+    // that was unplugged will not answer.
+    if (_control.isOpen) {
+      await _control.streamStop(timeout: const Duration(milliseconds: 500));
     }
     _control.close();
     _controlPortName = null;
+    _lastControlFailure = null;
+    _deviceRecording = false;
+    _deviceRecordingPath = null;
+    _transferArmed = false;
     // The version belonged to the board that just went away.
     _firmwareVersion = null;
 
@@ -431,8 +448,7 @@ class UsbSerialService extends ChangeNotifier {
       if (_control.open(controlPort)) {
         _controlPortName = controlPort;
         if (autoStartStreaming) {
-          _control.streamStart(ch: 0x03, ann: 0x00); // ECG + PPG (+ vitals)
-          debugPrint('✅ Control pipe $controlPort: stream_start sent (ECG+PPG)');
+          unawaited(_startStream());
         } else {
           debugPrint(
               'ℹ️ Control pipe $controlPort open; auto-start off, no stream_start');
@@ -444,6 +460,19 @@ class UsbSerialService extends ChangeNotifier {
     } catch (e) {
       debugPrint('⚠️ Control-port setup error (non-fatal): $e');
     }
+  }
+
+  Future<void> _startStream() async {
+    final r = await _control.streamStart(ch: 0x03, ann: 0x00); // ECG + PPG (+ vitals)
+    if (r.ok) debugPrint('✅ Control pipe $_controlPortName: stream started (ECG+PPG)');
+    _noteControl(r);
+  }
+
+  /// Start or stop the device's CDC0 stream from the control pipe.
+  Future<HpiFailure?> setDeviceStreaming(bool on) async {
+    final r = on ? await _control.streamStart() : await _control.streamStop();
+    _noteControl(r);
+    return r.failure;
   }
 
   /// Read the running image's version over MCUmgr, once per control session.
@@ -466,38 +495,46 @@ class UsbSerialService extends ChangeNotifier {
   /// Arm/disarm USB MSC Transfer Mode via the CDC1 control pipe (group 64
   /// 0x0069). Arming re-enumerates the device, so the data/control ports will
   /// briefly drop and the host mounts the SD as a USB drive; disarming restores
-  /// streaming. Returns true if the command was written.
-  bool setTransferMode(bool on) {
-    if (!_control.isOpen) {
-      debugPrint('⚠️ Transfer Mode: control port not open');
-      return false;
+  /// streaming. State follows the device's reply, not the request. Returns the
+  /// failure, or null on success.
+  Future<HpiFailure?> setTransferMode(bool on) async {
+    final r = await _control.transferMode(on);
+    if (r.ok) {
+      _transferArmed = r.value?.armed ?? on;
+      debugPrint('📦 Transfer Mode ${_transferArmed ? "armed" : "disarmed"}');
     }
-    final ok = _control.transferMode(on);
-    if (ok) {
-      _transferArmed = on;
-      debugPrint('📦 Transfer Mode ${on ? "ARM" : "DISARM"} sent on $_controlPortName');
-      notifyListeners();
-    }
-    return ok;
+    _noteControl(r);
+    notifyListeners();
+    return r.failure;
   }
 
   /// Start/stop recording to the device's SD card via the CDC1 control pipe
-  /// (group 64 0x0061/0x0062). Independent of host-side recording. Returns true
-  /// if the command was written.
-  bool setDeviceRecording(bool on, {String? name}) {
-    if (!_control.isOpen) {
-      debugPrint('⚠️ Device recording: control port not open');
-      return false;
-    }
-    final ok = on ? _control.sdRecordStart(name: name) : _control.sdRecordStop();
-    if (ok) {
-      _deviceRecording = on;
-      debugPrint('💾 Device SD recording ${on ? "START" : "STOP"} sent');
+  /// (group 64 0x0061/0x0062). Independent of host-side recording. State
+  /// follows the device's reply: a start the device refuses (no card, already
+  /// recording, locked) leaves the toggle off. Returns the failure, or null.
+  Future<HpiFailure?> setDeviceRecording(bool on, {String? name}) async {
+    if (on) {
+      final r = await _control.sdRecordStart(name: name);
+      if (r.ok) {
+        _deviceRecording = true;
+        _deviceRecordingPath = r.value?.path;
+        debugPrint('💾 Device SD recording started: $_deviceRecordingPath');
+      }
+      _noteControl(r);
       notifyListeners();
+      return r.failure;
     }
-    return ok;
+    final r = await _control.sdRecordStop();
+    if (r.ok) {
+      _deviceRecording = false;
+      _deviceRecordingPath = null;
+      debugPrint('💾 Device SD recording stopped');
+    }
+    _noteControl(r);
+    notifyListeners();
+    return r.failure;
   }
-  
+
   /// Cancel any pending reconnection timer
   void _cancelReconnectTimer() {
     _reconnectTimer?.cancel();

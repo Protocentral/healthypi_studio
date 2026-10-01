@@ -43,7 +43,7 @@ dependencies:
 
   # MCUmgr / SMP: the protocol client, the management groups, and Zephyr's
   # uart_mcumgr framing. Transports live in lib/services/smp/.
-  mcumgr_dart: ^0.3.0
+  mcumgr_dart: ^0.4.0
 
   # The app version, read from the built bundle rather than typed into a screen
   # where it would drift from `version:` above.
