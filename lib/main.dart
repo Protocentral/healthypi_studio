@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 import 'screens/studio/studio_home.dart';
 import 'services/ble_service.dart';
 import 'services/data_parser.dart';
+import 'services/device_status_service.dart';
 import 'services/eeg_packet_service.dart';
 import 'services/filter_integration_service.dart';
 import 'services/firmware_update_service.dart';
@@ -106,6 +107,12 @@ class HealthyPiStudio extends StatelessWidget {
         ChangeNotifierProvider(
           create: (context) =>
               FirmwareUpdateService(context.read<UsbSerialService>()),
+        ),
+        ChangeNotifierProvider(
+          create: (context) => DeviceStatusService(
+            context.read<UsbSerialService>(),
+            context.read<FirmwareUpdateService>(),
+          ),
         ),
 
         // ── Recording and export ─────────────────────────────────────────────

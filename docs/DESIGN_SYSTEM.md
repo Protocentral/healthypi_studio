@@ -269,10 +269,19 @@ cases, each visible in the UI rather than hidden:
   the wire and group 64 has no device-info command, so the card is now an empty
   state that says the firmware does not report an inventory. A table of invented
   hardware reads as a probe result, which makes a wrong row look like a fault.
-* **Device identity** — the firmware version is read over MCUmgr when the
-  control port opens and shown as reported; serial and MAC are in neither the
-  stream nor the MCUmgr surface, so they render as em dashes rather than
-  invented values.
+* **Device identity** — serial, board revision, uptime and the M7/M4/Wi-Fi
+  versions come from group-64 `device_info` and `fw_versions` when the control
+  port opens; battery from `telemetry`; stream and SD state from
+  `stream_status`/`sd_status`, polled while connected. A field the device does
+  not send renders as an em dash. An empty M4 version reads `— (not bound to
+  the M7 yet)`, which is what it means. MAC is not reported and is not shown.
+* **Device clock** — the RTC reports nothing until it has been written once.
+  Studio sets it from this machine on connect only in that case (os rc 4,
+  RTC_NOT_SET) and labels it `(set by Studio)`; a clock that is already set is
+  left alone.
+* **Lock** — a locked device refuses stream, recording and Transfer Mode, so
+  those actions are disabled with `— device locked` and a note. Unlocking needs
+  the device secret, which Studio does not hold.
 * **Firmware update over Wi-Fi** — the ESP32 firmware has no TCP :9000 SMP
   relay yet, so the Device screen lists the option disabled, with that reason,
   rather than offering a transport toggle that cannot connect. A bundle signed

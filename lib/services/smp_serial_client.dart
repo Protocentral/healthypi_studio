@@ -193,6 +193,65 @@ class SmpSerialClient {
           {Duration timeout = const Duration(seconds: 3)}) =>
       _typed(Hpi.fwVersions, FwVersionsReply.fromMap, timeout: timeout);
 
+  Future<HpiResult<TelemetryReply>> telemetry() =>
+      _typed(Hpi.telemetry, TelemetryReply.fromMap);
+
+  /// 0 = unlocked. A locked device rejects stream_start, sd_record_start and
+  /// transfer_mode.
+  Future<HpiResult<LockStateReply>> lockState() =>
+      _typed(Hpi.lockState, LockStateReply.fromMap);
+
+  // ---- RTC (stock os group) ----
+
+  static const int _osGroup = 0;
+  static const int _osDatetime = 4;
+
+  /// Read the device clock. RTC_NOT_SET (os rc 4) means it has never been
+  /// written, and recordings are stamped with time 0 until it is.
+  Future<HpiResult<String?>> readDatetime() async {
+    final r = await _os0(SmpOp.readReq, const {});
+    return r.ok ? HpiResult.ok(hpiStr(r.value!['datetime'])) : HpiResult.failed(r.failure!);
+  }
+
+  /// Set the device clock to [when], as local time with an explicit offset —
+  /// the form the firmware's own host tool writes.
+  Future<HpiResult<void>> writeDatetime(DateTime when) =>
+      _os0(SmpOp.writeReq, {'datetime': isoWithOffset(when)});
+
+  Future<HpiResult<Map<String, Object?>>> _os0(
+      SmpOp op, Map<String, Object?> payload) async {
+    const cmd = HpiCommand(_osDatetime, 'os datetime', read: true, write: true);
+    final SmpClient? client = _client;
+    if (client == null || !isOpen) {
+      return HpiResult.failed(HpiFailure.notConnected(cmd));
+    }
+    client.timeout = const Duration(seconds: 3);
+    try {
+      final rsp = await client.send(
+          op: op, group: _osGroup, id: _osDatetime, payload: payload);
+      final rc = rsp.rc;
+      if (rc != null) {
+        return HpiResult.failed(
+            HpiFailure.fromReply(cmd, rc, rsp.errGroup ?? _osGroup));
+      }
+      return HpiResult.ok(rsp.payload);
+    } on SmpException catch (e) {
+      return HpiResult.failed(HpiFailure.transport(cmd, e));
+    }
+  }
+
+  /// `2026-10-01T16:20:05+05:30`.
+  static String isoWithOffset(DateTime when) {
+    final t = when.toLocal();
+    String two(int n) => n.toString().padLeft(2, '0');
+    final off = t.timeZoneOffset;
+    final sign = off.isNegative ? '-' : '+';
+    final mins = off.inMinutes.abs();
+    return '${t.year.toString().padLeft(4, '0')}-${two(t.month)}-${two(t.day)}'
+        'T${two(t.hour)}:${two(t.minute)}:${two(t.second)}'
+        '$sign${two(mins ~/ 60)}:${two(mins % 60)}';
+  }
+
   // ---- M4 update (group 64, signed builds only) ----
 
   /// Call first: the M4 update service's state, and whether it requires a
@@ -385,6 +444,7 @@ class HpiFailure {
       final stock = hpiStockErrors[group ?? -1]?[rc];
       if (stock != null) return stock;
       if (rc == 8) return 'not supported by this firmware';
+      if (rc == 13) return 'the device is locked';
       return 'error $rc';
     }
     return message;

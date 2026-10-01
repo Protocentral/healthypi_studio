@@ -579,16 +579,22 @@ class UsbSerialService extends ChangeNotifier {
     return r.failure;
   }
 
-  /// Read the running image's version over MCUmgr, once per control session.
+  /// Read the M7 firmware version once per control session: from group 64
+  /// `fw_versions`, else from the running MCUboot image.
   ///
   /// Best-effort and quiet: a board that does not answer leaves the field null,
   /// and every consumer renders that as unknown rather than as a guess.
   Future<void> _readFirmwareVersion() async {
     try {
-      final ImageSlot? running = await _control.runningImage();
-      if (running == null) return;
-      _firmwareVersion =
-          running.version.isEmpty ? running.shortHash : running.version;
+      final v = (await _control.fwVersions()).value?.m7fw;
+      if (v != null && v.isNotEmpty) {
+        _firmwareVersion = v;
+      } else {
+        final ImageSlot? running = await _control.runningImage();
+        if (running == null) return;
+        _firmwareVersion =
+            running.version.isEmpty ? running.shortHash : running.version;
+      }
       debugPrint('✅ Firmware version: $_firmwareVersion');
       notifyListeners();
     } catch (e) {

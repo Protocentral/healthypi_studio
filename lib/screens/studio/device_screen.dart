@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../services/data_parser.dart';
+import '../../services/device_status_service.dart';
 import '../../services/live_data_pump.dart';
 import '../../services/firmware/bundle.dart';
 import '../../services/firmware/firmware_updater.dart';
@@ -92,6 +93,8 @@ class DeviceScreenState extends State<DeviceScreen> {
             kCardGap,
             const _CountersRow(),
             kCardGap,
+            const _StatusCard(),
+            kCardGap,
             const Expanded(child: _SensorInventory()),
           ],
         ),
@@ -135,22 +138,47 @@ class _IdentityCard extends StatelessWidget {
     final wifi = context.watch<WifiSerialService>();
     final parser = context.watch<DataParser>();
     final pump = context.watch<LiveDataPump>();
+    final status = context.watch<DeviceStatusService>();
+    final info = status.info;
+    final v = status.versions;
 
-    // Only what the transport and protocol actually tell us. The firmware
-    // version is read over MCUmgr when the control port opens
-    // (`UsbSerialService.firmwareVersion`); serial and MAC are in neither the
-    // stream nor the MCUmgr surface, so they stay em dashes rather than
-    // invented values.
+    // Only what the device and the transport report: identity from
+    // device_info, versions from fw_versions, both read over the control port
+    // when it opens. A field the device did not send stays an em dash.
+    final m4 = v?.m4fw ?? info?.m4fw;
     final facts = <(String, String)>[
       ('Model', usb.isConnected || wifi.isConnected ? 'HealthyPi 6' : '—'),
+      ('Serial', _orDash(info?.sn)),
+      ('Board revision', _orDash(info?.br)),
+      ('M7 firmware', _orDash(v?.m7fw ?? info?.fw ?? usb.firmwareVersion)),
+      (
+        'M4 firmware',
+        m4 == null
+            ? '—'
+            : (m4.isEmpty ? '— (not bound to the M7 yet)' : m4),
+      ),
+      ('Wi-Fi co-processor', _orDash(v?.espfw ?? info?.espfw)),
+      ('Device uptime', info?.up == null ? '—' : formatDuration(Duration(seconds: info!.up!))),
+      (
+        'Clock',
+        status.clockError ??
+            (status.clock == null
+                ? '—'
+                : '${status.clock}${status.clockSetByStudio ? ' (set by Studio)' : ''}'),
+      ),
+      (
+        'Lock',
+        switch (status.locked) {
+          null => '—',
+          true => 'Locked',
+          false => 'Unlocked',
+        },
+      ),
       ('Transport', usb.isConnected ? 'USB CDC' : (wifi.isConnected ? 'WiFi TCP' : '—')),
       ('Port', usb.connectedPortName?.split('/').last ?? '—'),
+      ('Control port', usb.controlPortName?.split('/').last ?? 'closed'),
       ('Protocol', parser.protocolVersionString),
-      ('Control port', usb.controlConnected ? 'CDC1 open' : 'closed'),
       ('Stream uptime', formatDuration(pump.streamDuration)),
-      ('Serial', '—'),
-      ('Firmware', usb.firmwareVersion ?? '—'),
-      ('Licence', 'CERN-OHL-P v2'),
     ];
 
     return HpiCard(
@@ -189,8 +217,7 @@ class _IdentityCard extends StatelessWidget {
   }
 }
 
-/// Health counters. Battery, storage and die temperature are not in the current
-/// stream, so the row reports the link counters the app does have.
+/// Health counters: the battery from telemetry, and the link counters.
 class _CountersRow extends StatelessWidget {
   const _CountersRow();
 
@@ -200,11 +227,26 @@ class _CountersRow extends StatelessWidget {
     final parser = context.watch<DataParser>();
     final settings = context.watch<StudioSettings>();
     final data = parser.currentOpenViewData;
+    final t = context.watch<DeviceStatusService>().telemetry;
+    final batteryUnit = [
+      if (t?.vbatMv != null) '${t!.vbatMv} mV',
+      if (t?.usb == true) 'on USB',
+      if (t?.batt == false) 'no battery',
+    ].join(' · ');
 
     return SizedBox(
       height: 104,
       child: Row(
         children: [
+          Expanded(
+            child: _Counter(
+              label: 'Battery',
+              value: t?.soc == null ? '—' : '${t!.soc}%',
+              unit: batteryUnit.isEmpty ? 'not reported' : batteryUnit,
+              tone: t?.ok == false ? p.warning : p.success,
+            ),
+          ),
+          kCardGapH,
           Expanded(
             child: _Counter(
               label: 'Packets',
@@ -295,14 +337,70 @@ class _Counter extends StatelessWidget {
   }
 }
 
+/// Stream, SD card and Transfer Mode, as the device reports them.
+class _StatusCard extends StatelessWidget {
+  const _StatusCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.hpi;
+    final usb = context.watch<UsbSerialService>();
+    final status = context.watch<DeviceStatusService>();
+    final st = status.stream;
+    final sd = status.sd;
+
+    String bytes(int? b) => b == null
+        ? '—'
+        : (b >= 1 << 20
+            ? '${(b / (1 << 20)).toStringAsFixed(1)} MB'
+            : '${(b / 1024).toStringAsFixed(0)} KB');
+
+    final facts = <(String, String, Color?)>[
+      (
+        'Device stream',
+        st?.active == null ? '—' : (st!.active! ? 'streaming' : 'stopped'),
+        st?.active == true ? p.success : null,
+      ),
+      ('Frames sent', st?.sent == null ? '—' : '${st!.sent}', null),
+      (
+        'Dropped on device',
+        st?.dropped == null ? '—' : '${st!.dropped}',
+        (st?.dropped ?? 0) > 0 ? p.warning : null,
+      ),
+      (
+        'SD recording',
+        sd?.active == null ? '—' : (sd!.active! ? 'recording' : 'idle'),
+        sd?.active == true ? p.accent : null,
+      ),
+      ('SD file', _orDash(sd?.path), null),
+      ('SD written', bytes(sd?.bytes), null),
+      ('Transfer Mode', usb.transferArmed ? 'armed' : 'off', null),
+    ];
+
+    return HpiCard(
+      padding: const EdgeInsets.all(16),
+      child: Wrap(
+        spacing: 24,
+        runSpacing: 10,
+        children: [
+          for (final f in facts)
+            SizedBox(
+              width: 210,
+              child: HpiKeyValue(f.$1, f.$2, valueColor: f.$3),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Where the sensor inventory will go, once the firmware can report one.
 ///
 /// This card used to list part numbers, bus addresses and sample rates for
-/// front-ends that are not on a HealthyPi 6 — none of it came off the wire, and
-/// the group-64 surface has no device-info command to fill it with. A table of
-/// invented hardware is worse than no table: it reads as a probe result, so a
-/// wrong row looks like a fault on the board. It stays out until the firmware
-/// answers for its own inventory.
+/// front-ends that are not on a HealthyPi 6 — none of it came off the wire. A
+/// table of invented hardware is worse than no table: it reads as a probe
+/// result, so a wrong row looks like a fault on the board. The firmware does
+/// report HealthyLink modules (`module_list`); listing them here is planned.
 class _SensorInventory extends StatelessWidget {
   const _SensorInventory();
 
@@ -344,6 +442,8 @@ class _FirmwareColumn extends StatelessWidget {
     final p = context.hpi;
     final usb = context.watch<UsbSerialService>();
     final fw = context.watch<FirmwareUpdateService>();
+    final locked = context.watch<DeviceStatusService>().locked == true;
+    final lockNote = locked ? ' — device locked' : '';
     final bundle = fw.bundle;
     final outcome = fw.outcome;
     final fraction = fw.progress.fraction;
@@ -521,8 +621,8 @@ class _FirmwareColumn extends StatelessWidget {
                 ),
                 HpiActionRow(
                   icon: Icons.play_arrow,
-                  title: 'Start device stream',
-                  onTap: usb.controlConnected && !fw.busy
+                  title: 'Start device stream$lockNote',
+                  onTap: usb.controlConnected && !fw.busy && !locked
                       ? () => _report(context, usb.setDeviceStreaming(true),
                           'Device stream started')
                       : null,
@@ -539,8 +639,10 @@ class _FirmwareColumn extends StatelessWidget {
                   icon: Icons.sd_card,
                   title: usb.deviceRecording
                       ? 'Stop on-board recording'
-                      : 'Start on-board recording',
-                  onTap: usb.controlConnected && !fw.busy
+                      : 'Start on-board recording$lockNote',
+                  onTap: usb.controlConnected &&
+                          !fw.busy &&
+                          (usb.deviceRecording || !locked)
                       ? () => _report(
                           context,
                           usb.setDeviceRecording(!usb.deviceRecording),
@@ -549,6 +651,24 @@ class _FirmwareColumn extends StatelessWidget {
                               : 'On-board recording started')
                       : null,
                 ),
+                HpiActionRow(
+                  icon: Icons.usb,
+                  title: usb.transferArmed
+                      ? 'Disarm Transfer Mode'
+                      : 'Arm Transfer Mode (SD card as a USB drive)$lockNote',
+                  onTap: usb.controlConnected &&
+                          !fw.busy &&
+                          (usb.transferArmed || !locked)
+                      ? () => _toggleTransferMode(context, usb)
+                      : null,
+                ),
+                if (locked)
+                  HpiNote(
+                    'The device is locked, so it refuses stream, recording and '
+                    'Transfer Mode commands. Unlocking needs its shared secret, '
+                    'which Studio does not hold yet.',
+                    color: p.warning,
+                  ),
                 const HpiRule(),
                 HpiNote(
                   'Schematics, KiCad files and firmware sources for the board '
@@ -561,6 +681,36 @@ class _FirmwareColumn extends StatelessWidget {
       ],
     );
   }
+}
+
+Future<void> _toggleTransferMode(
+    BuildContext context, UsbSerialService usb) async {
+  if (!usb.transferArmed) {
+    final go = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Arm Transfer Mode?'),
+        content: const Text(
+          'The device re-enumerates with its SD card as a USB drive. Streaming '
+          'and the control port drop until Transfer Mode is disarmed.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Arm'),
+          ),
+        ],
+      ),
+    );
+    if (go != true || !context.mounted) return;
+  }
+  final arm = !usb.transferArmed;
+  await _report(context, usb.setTransferMode(arm),
+      arm ? 'Transfer Mode armed' : 'Transfer Mode disarmed');
 }
 
 Future<void> _confirmEnterRecovery(BuildContext context) async {
