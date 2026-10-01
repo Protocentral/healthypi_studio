@@ -1,4 +1,4 @@
-/// Public keys Studio accepts as signers of a `.hpifw` bundle manifest.
+/// Public keys Studio accepts as signers of a firmware bundle manifest.
 ///
 /// One ECDSA-P256 keypair signs the M7 image (checked by MCUboot), the M4 image
 /// (checked by the M7 at commit) and the bundle manifest (checked here). Only

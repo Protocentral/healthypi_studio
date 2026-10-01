@@ -151,7 +151,7 @@ the MCUmgr SMP surface and the USB dual-CDC topology are specified in
 
 ## Updating a device
 
-Studio installs a signed `.hpifw` release bundle over USB (CDC 1) from the Device
+Studio installs a signed firmware bundle (`hpi6-firmware-<version>.zip`) over USB (CDC 1) from the Device
 screen. It does what the firmware's own `healthypi fw update` does:
 
 - verifies the bundle's manifest signature and every image digest before sending

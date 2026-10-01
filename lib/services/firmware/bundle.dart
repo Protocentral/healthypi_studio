@@ -7,9 +7,10 @@ import 'package:pointycastle/export.dart';
 
 import 'keys.dart';
 
-/// A `.hpifw` firmware bundle: one release for every processor on the board.
+/// A firmware bundle: one release for every processor on the board.
 ///
-/// A zip of `manifest.json`, `manifest.sig` (raw 64-byte ECDSA-P256 `r || s`
+/// A plain zip (`hpi6-firmware-<version>.zip`; older bundles used a `.hpifw`
+/// extension for the same format) of `manifest.json`, `manifest.sig` (raw 64-byte ECDSA-P256 `r || s`
 /// over the SHA-256 of the manifest bytes exactly as stored) and one `.bin`
 /// per image. Format reference: healthypi-6-fw `tools/healthypi/src/healthypi/
 /// fw/bundle.py` and `docs/ARCHITECTURE.md` §10.
@@ -38,6 +39,15 @@ class FirmwareBundle {
   List<String> get hwRevisions =>
       (manifest['hw_rev'] as List?)?.map((e) => '$e').toList() ?? const [];
 
+  /// A zip archive, by its local-file-header magic. Says nothing about
+  /// whether it is a valid bundle; [open] decides that.
+  static bool looksLikeBundle(List<int> bytes) =>
+      bytes.length >= 4 &&
+      bytes[0] == 0x50 &&
+      bytes[1] == 0x4B &&
+      bytes[2] == 0x03 &&
+      bytes[3] == 0x04;
+
   /// Open and verify [zipBytes]: every image digest and size, then the
   /// manifest signature against [keys]. Throws [BundleException] on the first
   /// failure, saying what is wrong.
@@ -49,7 +59,7 @@ class FirmwareBundle {
     try {
       archive = ZipDecoder().decodeBytes(zipBytes, verify: true);
     } catch (e) {
-      throw BundleException('not a .hpifw bundle ($e)');
+      throw BundleException('not a firmware bundle ($e)');
     }
     Uint8List? read(String name) {
       final f = archive.findFile(name);

@@ -6,7 +6,7 @@ import 'package:mcumgr_dart/mcumgr_dart.dart';
 import '../smp_serial_client.dart';
 import 'bundle.dart';
 
-/// Applies a `.hpifw` bundle to a HealthyPi 6 over its control link.
+/// Applies a firmware bundle (zip) to a HealthyPi 6 over its control link.
 ///
 /// A port of the reference updater, healthypi-6-fw
 /// `tools/healthypi/src/healthypi/fw/update.py` (`apply_bundle`). The device

@@ -1,4 +1,4 @@
-// Builds signed .hpifw bundles and imgtool-shaped MCUboot images for tests,
+// Builds signed firmware bundles (zips) and imgtool-shaped MCUboot images for tests,
 // with a throwaway P-256 key.
 
 import 'dart:convert';
@@ -48,7 +48,7 @@ class TestSigner {
   }
 }
 
-/// A `.hpifw` zip. [images] maps name → (version, bytes); the M4 entry gets an
+/// A firmware bundle zip. [images] maps name → (version, bytes); the M4 entry gets an
 /// image signature. [mutate] may edit the archive files after signing.
 Uint8List buildBundle(
   TestSigner signer,

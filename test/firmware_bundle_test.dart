@@ -63,6 +63,12 @@ void main() {
       );
     });
 
+    test('bundles are recognised by content, not extension', () {
+      final zip = buildBundle(signer, {'m4': ('1.0.2', m4)});
+      expect(FirmwareBundle.looksLikeBundle(zip), isTrue);
+      expect(FirmwareBundle.looksLikeBundle(m7), isFalse); // MCUboot image
+    });
+
     test('a file that is not a zip is refused', () {
       expect(() => FirmwareBundle.open(Uint8List(100), keys: [signer.key]),
           throwsA(isA<BundleException>()));

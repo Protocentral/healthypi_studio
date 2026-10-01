@@ -121,9 +121,9 @@ String _stageLabel(UpdateStage s) => switch (s) {
 Future<void> _pickFirmware(BuildContext context) async {
   final fw = context.read<FirmwareUpdateService>();
   final res = await FilePicker.platform.pickFiles(
-    dialogTitle: 'Select a firmware bundle (.hpifw) or a signed M7 image (.bin)',
+    dialogTitle: 'Select a firmware bundle (.zip) or a signed M7 image (.bin)',
     type: FileType.custom,
-    allowedExtensions: const ['hpifw', 'bin'],
+    allowedExtensions: const ['zip', 'hpifw', 'bin'],
   );
   final path = res?.files.single.path;
   if (path != null) await fw.select(path);
@@ -619,7 +619,7 @@ class _FirmwareColumn extends StatelessWidget {
                 ],
               ),
               _FileRow(
-                label: 'Firmware bundle (.hpifw)',
+                label: 'Firmware bundle (.zip)',
                 path: fw.path,
                 enabled: !fw.busy,
                 onPick: () => _pickFirmware(context),
@@ -639,7 +639,8 @@ class _FirmwareColumn extends StatelessWidget {
                 HpiNote(
                   'A single M7 image, outside a bundle: there is no manifest '
                   'signature to check, and the M4 is left as it is. MCUboot '
-                  'still verifies the image signature before booting it.',
+                  'still verifies the image signature before booting it. If '
+                  'this came out of a release zip, select the zip instead.',
                   color: p.warning,
                 ),
               ],
