@@ -286,6 +286,9 @@ cases, each visible in the UI rather than hidden:
   relay yet, so the Device screen lists the option disabled, with that reason,
   rather than offering a transport toggle that cannot connect. A bundle signed
   by the development key shows its signer in amber.
+* **Wi-Fi stream** — decoded as OpenView v2, which the co-processor sends, but
+  not yet verified on hardware. Over Wi-Fi there are no vitals flags, so no
+  HR-source label or lead-off tags, and no HRV packets.
 * **No device attached** — Live runs the built-in generator and the badge reads
   `Demo data`, with the status line saying `Demo data · no device attached`.
 

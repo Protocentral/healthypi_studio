@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../protocol/hpi_group64.g.dart';
 import 'firmware_update_service.dart';
+import 'smp_serial_client.dart';
 import 'usb_serial_service.dart';
 
 /// What the connected HealthyPi 6 reports about itself, read over the control
@@ -31,6 +32,8 @@ class DeviceStatusService extends ChangeNotifier {
   StreamStatusReply? _stream;
   SdStatusReply? _sd;
   int? _lockState;
+  ConnStatusReply? _conn;
+  WifiStatusReply? _wifi;
   String? _clock;
   bool _clockSetByStudio = false;
   String? _clockError;
@@ -40,6 +43,10 @@ class DeviceStatusService extends ChangeNotifier {
   TelemetryReply? get telemetry => _telemetry;
   StreamStatusReply? get stream => _stream;
   SdStatusReply? get sd => _sd;
+
+  /// Co-processor link and radios. The radios are off at boot.
+  ConnStatusReply? get conn => _conn;
+  WifiStatusReply? get wifi => _wifi;
 
   /// The device's RTC as it reports it, or null if unread / unset.
   String? get clock => _clock;
@@ -83,6 +90,8 @@ class DeviceStatusService extends ChangeNotifier {
     _stream = null;
     _sd = null;
     _lockState = null;
+    _conn = null;
+    _wifi = null;
     _clock = null;
     _clockSetByStudio = false;
     _clockError = null;
@@ -109,6 +118,10 @@ class DeviceStatusService extends ChangeNotifier {
       _stream = (await c.streamStatus()).value ?? _stream;
       _sd = (await c.sdStatus()).value ?? _sd;
       _lockState = (await c.lockState()).value?.state ?? _lockState;
+      _conn = (await c.connStatus()).value ?? _conn;
+      // wifi_status answers HW_FAULT while the co-processor is held in reset.
+      final w = await c.wifiStatus();
+      _wifi = w.value ?? (w.failure?.rc != null ? null : _wifi);
       // The M4 version arrives over IPC a few seconds after boot.
       if ((_versions?.m4fw ?? '').isEmpty) {
         _versions = (await c.fwVersions()).value ?? _versions;
@@ -147,6 +160,23 @@ class DeviceStatusService extends ChangeNotifier {
     }
     notifyListeners();
   }
+
+  // ---- connectivity actions; each returns the failure, or null ----
+
+  Future<HpiFailure?> _act(Future<HpiResult<Object?>> Function() call) async {
+    if (!_usb.controlConnected) return null;
+    final r = await call();
+    await refreshStatus();
+    return r.failure;
+  }
+
+  Future<HpiFailure?> enableWifiRadio() =>
+      _act(() => _usb.control.connEnable(radios: 0x01));
+  Future<HpiFailure?> disableRadios() => _act(_usb.control.connDisable);
+  Future<HpiFailure?> setWifiNetwork(String ssid, String password) =>
+      _act(() => _usb.control.wifiSet(ssid, password));
+  Future<HpiFailure?> forgetWifiNetwork() => _act(_usb.control.wifiForget);
+  Future<HpiFailure?> startSoftAp() => _act(_usb.control.wifiSoftap);
 
   @override
   void dispose() {

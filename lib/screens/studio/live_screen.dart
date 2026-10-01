@@ -118,7 +118,9 @@ class _VitalsStrip extends StatelessWidget {
     final device = simulated ? null : data;
     final hrSource = device == null || device.heartRate == 0
         ? null
-        : (device.hrFromPpg ? 'PPG pulse rate' : 'ECG');
+        : (!device.hasVitalsFlags
+            ? 'source not reported'
+            : (device.hrFromPpg ? 'PPG pulse rate' : 'ECG'));
     final lf = hrv.lfHf;
 
     return Padding(

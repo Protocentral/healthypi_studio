@@ -285,10 +285,10 @@ class WifiSerialService extends ChangeNotifier {
       _dataStreamController.add(data);
     }
 
-    // Wire directly to DataParser (same as USB service)
-    // This ensures consistent data flow regardless of listener setup timing
+    // TCP 5000 carries OpenView v2 frames repacked by the ESP32, not the
+    // DBLK blocks USB carries, so it has its own decoder in DataParser.
     if (_dataParser != null) {
-      _dataParser!.parseBinaryData(data);
+      _dataParser!.parseOpenViewBytes(data);
     }
   }
 

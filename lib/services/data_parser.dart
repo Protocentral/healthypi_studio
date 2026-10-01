@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../protocol/hp6_formats.dart';
+import 'openview_parser.dart';
 
 /// OpenView packet constants - Dynamic packet structure with length autodetection
 ///
@@ -158,8 +159,13 @@ class OpenViewData {
   final int adcChannel2; // INP15/PA3
 
   /// `hp6_vitals.flags` from the last VITALS block (`Hp6VitalsFlag`). 0 when
-  /// the source does not report it.
+  /// the source does not report it; check [hasVitalsFlags].
   final int vitalsFlags;
+
+  /// The source reported vitals flags at all. False over Wi-Fi (OpenView has
+  /// no such field) and before the first VITALS block, when the HR source is
+  /// unknown rather than ECG.
+  final bool hasVitalsFlags;
 
   /// `hp6_ecg_sample.lead_off` for this sample (`Hp6LeadOff` electrode mask).
   final int ecgLeadOff;
@@ -184,6 +190,7 @@ class OpenViewData {
     required this.adcChannel1,
     required this.adcChannel2,
     this.vitalsFlags = 0,
+    this.hasVitalsFlags = false,
     this.ecgLeadOff = 0,
     DateTime? timestamp,
   }) : timestamp = timestamp ?? DateTime.now();
@@ -761,6 +768,48 @@ class DataParser extends ChangeNotifier {
   }
 
   // ====================================================================
+  // Wi-Fi: OpenView v2 frames from the ESP32 co-processor (TCP 5000)
+  // ====================================================================
+
+  final OpenViewParser _openView = OpenViewParser();
+  bool _warnedLegacyOpenView = false;
+
+  /// OpenView frames rejected (bad footer or unknown version).
+  int get openViewDropped => _openView.dropped;
+
+  /// Legacy v1 OpenView frames received — pre-v2 co-processor firmware.
+  int get openViewLegacyFrames => _openView.legacyV1;
+
+  /// Entry point for the Wi-Fi stream. The ESP32 does not forward DBLK: it
+  /// repacks samples into OpenView v2 frames, one per ECG sample with the
+  /// PPG and vitals alongside, so they map straight onto [OpenViewData].
+  void parseOpenViewBytes(List<int> bytes) {
+    _bytesReceivedTotal += bytes.length;
+    _chunkCount++;
+    final packets = _openView.add(bytes);
+    if (_openView.legacyV1 > 0 && !_warnedLegacyOpenView) {
+      _warnedLegacyOpenView = true;
+      debugPrint('⚠️ OpenView v1 frames on Wi-Fi: the co-processor firmware '
+          'predates v2 and is not supported');
+    }
+    if (packets.isEmpty) return;
+    _currentProtocolVersion = 2;
+    for (final ov in packets) {
+      _currentOpenViewData = ov;
+      _currentData = ov.toHealthyPiData();
+      _addToRingBuffer(ov);
+      _packetStreamController.add(ov);
+      _packetsReceived++;
+    }
+    _updatePacketRate();
+    final now = DateTime.now();
+    if (now.difference(_lastNotifyTime).inMilliseconds >= _notifyIntervalMs) {
+      _lastNotifyTime = now;
+      notifyListeners();
+    }
+  }
+
+  // ====================================================================
   // .HP6 DBLK stream parsing (Studio rewrite for the firmware rewrite)
   // --------------------------------------------------------------------
   // DBLK block (little-endian, see firmware services/hp6_frame.h):
@@ -786,6 +835,7 @@ class DataParser extends ChangeNotifier {
   int _lastRr = 0;
   double _lastTemp = 0.0;
   int _lastVitalsFlags = 0;
+  bool _vitalsSeen = false;
   int _lastStreamSeq = -1;
 
   // PPG real-sample FIFO. PPG (250 Hz) arrives in 16-sample blocks; ECG is
@@ -927,6 +977,7 @@ class DataParser extends ChangeNotifier {
             adcChannel1: 0,
             adcChannel2: 0,
             vitalsFlags: _lastVitalsFlags,
+            hasVitalsFlags: _vitalsSeen,
             ecgLeadOff: b[o + 16],
           );
           _currentOpenViewData = ov;
@@ -964,6 +1015,7 @@ class DataParser extends ChangeNotifier {
           _lastRr = _readUint16LE(b, o + 4);
           _lastTemp = _readInt16LE(b, o + 6) / 100.0;
           _lastVitalsFlags = flags;
+          _vitalsSeen = true;
           final hrv = HRVPacketData(
             rawPayload: const [],
             timestampMs: _readUint32LE(b, 12), // low 32 bits of t_ms
@@ -1281,6 +1333,9 @@ class DataParser extends ChangeNotifier {
     _eventsReceived = 0;
     _lastStreamSeq = -1;
     _lastVitalsFlags = 0;
+    _vitalsSeen = false;
+    _openView.reset();
+    _warnedLegacyOpenView = false;
   }
 
   void clear() {

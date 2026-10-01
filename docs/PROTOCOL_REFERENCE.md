@@ -12,11 +12,11 @@ This document is the single source of truth for the HealthyPi 6 wire formats tha
 | Concern | Current truth | Where |
 |---|---|---|
 | **Streaming format** | `.HP6` **DBLK** blocks (channel-batched, CRC32). | [data_parser.dart:671](../lib/services/data_parser.dart#L671) |
-| **Legacy OpenView** (38/46/50-byte packets, types 0x02/0x03/0x04) | **Dead code**, retained for reference behind `// ignore: dead_code`. Not parsed. | [data_parser.dart:673](../lib/services/data_parser.dart#L673) |
+| **OpenView v2** (50-byte data frames) | The **Wi-Fi** format: the ESP32 repacks samples into OpenView v2 on TCP 5000. Decoded by `OpenViewParser`. HRV/EEG frames are stepped over, and v1 is counted but not decoded. Not yet verified on hardware. | [openview_parser.dart](../lib/services/openview_parser.dart) |
 | **USB data link (CDC0)** | **921600 baud**, 8N1, event-driven (`SerialPortReader`). | [usb_serial_service.dart:198](../lib/services/usb_serial_service.dart#L198) |
 | **USB control (CDC1)** | MCUmgr SMP over Zephyr serial framing. | [smp_serial_client.dart](../lib/services/smp_serial_client.dart) |
-| **WiFi data** | TCP **:5000** on the ESP32-C6, same byte stream as CDC0. | [wifi_serial_service.dart](../lib/services/wifi_serial_service.dart) |
-| **WiFi control / OTA** | TCP **:9000** SMP passthrough on the ESP32-C6. | [smp_serial_client.dart:48](../lib/services/smp_serial_client.dart#L48) |
+| **WiFi data** | TCP **:5000** on the ESP32-C6: **OpenView v2**, not DBLK. The radio is off at boot; `conn_enable` over USB first. | [wifi_serial_service.dart](../lib/services/wifi_serial_service.dart) |
+| **WiFi control / OTA** | TCP **:9000** SMP passthrough: **not implemented in the ESP32 firmware** (only a Kconfig stub), so Studio disables it. | [smp_serial_client.dart](../lib/services/smp_serial_client.dart) |
 | **BLE** | Connect + time-sync only; **no data, no control, no DFU**. | [ble_service.dart](../lib/services/ble_service.dart) |
 
 > **Baud-rate note (resolves a long-standing doc conflict):** older docs variously claimed 115200 or 921600, and one flagged that 115200 cannot carry 19 KB/s. The shipping code uses **921600** (`_lastBaudRate = 921600`, `connect(..., baudRate = 921600)`). Treat any "115200" in archived docs as stale.
@@ -92,9 +92,9 @@ ECG is 500 Hz, PPG is 250 Hz. The parser keeps a PPG FIFO and pops one real PPG 
 
 ---
 
-## 2. Legacy OpenView packets (ARCHIVED — not parsed today)
+## 2. OpenView packets (the Wi-Fi format)
 
-Retained for historical reference and for any old firmware/ESP images still in the field. **The current parser does not decode these** — they are counted as sync-skip bytes. If you need to re-enable them, the decoders still live in `data_parser.dart` (dead-code region) and in the archived specs.
+The M7 never sends these. The ESP32-C6 repacks samples into **OpenView v2** for TCP 5000 and UDP 5001, and `OpenViewParser` decodes the 50-byte data frames: header `0A FA 2B 02 02`, body `<I6iBHBBH2i>` (seq, ecg1-3, resp, ppg red/ir, ppg_valid `0xFF`, hr u16, spo2 u8, rr u8, temp centi-°C u16, adc1/2), footer `00 0B`. The reference is healthypi-6-fw `tools/healthypi/src/healthypi/openview/protocol.py`. HRV (27 B) and EEG (51 B) frames are stepped over by length. v1 is emitted by no current firmware and is counted, not decoded. Tests: `test/openview_decode_test.dart`.
 
 Summary of the legacy family (full byte tables are preserved in git history, in the pre-2026-07-23 `OPENVIEW_PROTOCOL.md` and `OPENVIEW_HRV_PACKET_SPEC.md`):
 

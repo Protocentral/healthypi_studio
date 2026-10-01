@@ -402,6 +402,9 @@ class ConnectScreenState extends State<ConnectScreen> {
                     onSubmitted: (_) => _connectWifi(),
                   ),
                 ),
+                const SizedBox(height: 4),
+                HpiNote('The Wi-Fi radio is off at boot. Turn it on and join a '
+                    'network from Device → Wi-Fi while connected over USB.'),
               ],
             ),
           ),

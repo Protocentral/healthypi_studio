@@ -206,6 +206,7 @@ void main() {
       expect(p.spo2, 98);
       expect(p.respirationRate, 14);
       expect(p.temperature, closeTo(-1.25, 1e-9));
+      expect(p.hasVitalsFlags, isTrue);
       expect(p.hrFromPpg, isFalse);
       expect(p.ecgLeadsOff, isTrue);
     });

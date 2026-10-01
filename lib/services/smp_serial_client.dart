@@ -201,6 +201,39 @@ class SmpSerialClient {
   Future<HpiResult<LockStateReply>> lockState() =>
       _typed(Hpi.lockState, LockStateReply.fromMap);
 
+  // ---- connectivity (ESP32-C6 co-processor) ----
+
+  /// Radio state as the M7 sees it. `link`: 0 off by request, 1 starting,
+  /// 2 up, 3 fault.
+  Future<HpiResult<ConnStatusReply>> connStatus() =>
+      _typed(Hpi.connStatus, ConnStatusReply.fromMap);
+
+  /// Power the co-processor and bring up [radios] (bit 0 Wi-Fi, bit 1 BLE).
+  /// The reply means "accepted", not "radio up": poll [connStatus].
+  Future<HpiResult<ConnEnableReply>> connEnable({int radios = 0x01}) => _typed(
+      Hpi.connEnable, ConnEnableReply.fromMap,
+      payload: connEnableRequest(radios: radios));
+
+  /// Radios down and the co-processor back into reset.
+  Future<HpiResult<ConnDisableReply>> connDisable() =>
+      _typed(Hpi.connDisable, ConnDisableReply.fromMap);
+
+  Future<HpiResult<WifiStatusReply>> wifiStatus() =>
+      _typed(Hpi.wifiStatus, WifiStatusReply.fromMap);
+
+  /// Store network credentials. Unlock-gated.
+  Future<HpiResult<WifiSetReply>> wifiSet(String ssid, String password) =>
+      _typed(Hpi.wifiSet, WifiSetReply.fromMap,
+          payload: wifiSetRequest(ssid: ssid, pw: password));
+
+  Future<HpiResult<WifiForgetReply>> wifiForget() =>
+      _typed(Hpi.wifiForget, WifiForgetReply.fromMap);
+
+  /// Start the provisioning access point. Not unlock-gated: it is how a
+  /// locked device gets online.
+  Future<HpiResult<WifiSoftapReply>> wifiSoftap() =>
+      _typed(Hpi.wifiSoftap, WifiSoftapReply.fromMap);
+
   // ---- RTC (stock os group) ----
 
   static const int _osGroup = 0;

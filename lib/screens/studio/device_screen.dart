@@ -95,6 +95,8 @@ class DeviceScreenState extends State<DeviceScreen> {
             kCardGap,
             const _StatusCard(),
             kCardGap,
+            const _WifiCard(),
+            kCardGap,
             const Expanded(child: _SensorInventory()),
           ],
         ),
@@ -388,6 +390,157 @@ class _StatusCard extends StatelessWidget {
               width: 210,
               child: HpiKeyValue(f.$1, f.$2, valueColor: f.$3),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The Wi-Fi co-processor, driven over the USB control port. Its radios are
+/// off at boot (the C6 is held in reset), so Wi-Fi streaming needs Enable
+/// first.
+class _WifiCard extends StatefulWidget {
+  const _WifiCard();
+
+  @override
+  State<_WifiCard> createState() => _WifiCardState();
+}
+
+class _WifiCardState extends State<_WifiCard> {
+  final _ssid = TextEditingController();
+  final _pw = TextEditingController();
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _ssid.dispose();
+    _pw.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run(Future<HpiFailure?> action, String success) async {
+    setState(() => _busy = true);
+    await _report(context, action, success);
+    if (mounted) setState(() => _busy = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.hpi;
+    final usb = context.watch<UsbSerialService>();
+    final status = context.watch<DeviceStatusService>();
+    final conn = status.conn;
+    final wifi = status.wifi;
+    final locked = status.locked == true;
+    final ready = usb.controlConnected && !_busy;
+    final link = switch (conn?.link) {
+      null => '—',
+      0 => 'off',
+      1 => 'starting',
+      2 => 'up',
+      3 => 'fault',
+      final n => 'state $n',
+    };
+    final radioOn = (conn?.link ?? 0) != 0;
+
+    return HpiCard(
+      padding: const EdgeInsets.all(16),
+      child: HpiColumn(
+        gap: 10,
+        children: [
+          HpiSectionTitle('Wi-Fi',
+              note: 'co-processor radios are off at boot'),
+          Wrap(
+            spacing: 24,
+            runSpacing: 10,
+            children: [
+              for (final f in <(String, String)>[
+                ('Radio link', link),
+                ('Network', _orDash(wifi?.ssid ?? conn?.ssid)),
+                ('Address', _orDash(wifi?.ip ?? conn?.ip)),
+                ('Signal', (wifi?.rssi ?? conn?.rssi) == null
+                    ? '—'
+                    : '${wifi?.rssi ?? conn?.rssi} dBm'),
+              ])
+                SizedBox(width: 210, child: HpiKeyValue(f.$1, f.$2)),
+            ],
+          ),
+          Row(
+            children: [
+              HpiGhostButton(
+                label: radioOn ? 'Turn radio off' : 'Turn Wi-Fi radio on',
+                icon: Icons.power_settings_new,
+                height: 32,
+                onPressed: ready
+                    ? () => _run(
+                        radioOn
+                            ? status.disableRadios()
+                            : status.enableWifiRadio(),
+                        radioOn ? 'Radio off' : 'Radio starting')
+                    : null,
+              ),
+              const SizedBox(width: 8),
+              HpiGhostButton(
+                label: 'Start setup access point',
+                icon: Icons.wifi_tethering,
+                height: 32,
+                onPressed: ready && radioOn
+                    ? () => _run(status.startSoftAp(), 'Setup access point started')
+                    : null,
+              ),
+            ],
+          ),
+          Row(
+            children: [
+              Expanded(
+                child: SizedBox(
+                  height: 32,
+                  child: TextField(
+                    controller: _ssid,
+                    enabled: ready && !locked,
+                    style: HpiText.mono(p.textPrimary, size: 12),
+                    decoration: const InputDecoration(hintText: 'Network name'),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: SizedBox(
+                  height: 32,
+                  child: TextField(
+                    controller: _pw,
+                    enabled: ready && !locked,
+                    obscureText: true,
+                    style: HpiText.mono(p.textPrimary, size: 12),
+                    decoration: const InputDecoration(hintText: 'Password'),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              HpiGhostButton(
+                label: 'Join',
+                height: 32,
+                onPressed: ready && !locked && radioOn
+                    ? () => _run(
+                        status.setWifiNetwork(_ssid.text.trim(), _pw.text),
+                        'Network saved')
+                    : null,
+              ),
+              const SizedBox(width: 8),
+              HpiGhostButton(
+                label: 'Forget',
+                height: 32,
+                onPressed: ready && !locked && radioOn
+                    ? () => _run(status.forgetWifiNetwork(), 'Network forgotten')
+                    : null,
+              ),
+            ],
+          ),
+          if (locked)
+            HpiNote('Joining or forgetting a network needs an unlocked device. '
+                'The setup access point works while locked.')
+          else if (!radioOn && usb.controlConnected)
+            HpiNote('Turn the radio on to join a network or stream over Wi-Fi.'),
         ],
       ),
     );

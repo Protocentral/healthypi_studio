@@ -12,7 +12,7 @@ This guide describes how the shipping app is actually wired. Where the docs and 
 Device (HealthyPi 6)
   │  .HP6 DBLK blocks
   ├── USB CDC0 ────► UsbSerialService ─┐
-  ├── WiFi TCP:5000 ► WifiSerialService ┼─► DataParser.parseBinaryData()
+  ├── WiFi TCP:5000 ► WifiSerialService ┼─► DataParser.parseOpenViewBytes() (OpenView v2)
   └── (BLE: connect + time-sync only)  │       │ emits OpenViewData / HRVPacketData
                                         │       ▼
   USB CDC1 / WiFi TCP:9000 (SMP) ◄──────┘   ChannelController.addDataPointsSync()
@@ -42,9 +42,9 @@ Device (HealthyPi 6)
 - Always call `refreshDevices()` before showing a device picker.
 
 ### 2.2 WiFi ([wifi_serial_service.dart](../lib/services/wifi_serial_service.dart))
-- TCP client to the ESP32-C6, default port **5000**, `TCP_NODELAY`. Same DBLK byte stream as USB → same parser.
+- TCP client to the ESP32-C6, default port **5000**, `TCP_NODELAY`. The ESP32 sends **OpenView v2** frames, not DBLK, so bytes go to `DataParser.parseOpenViewBytes()` ([openview_parser.dart](../lib/services/openview_parser.dart)). The radio is off at boot: turn it on and join a network from Device → Wi-Fi over USB (`conn_enable`, `wifi_set`). Wi-Fi gives waveforms and vitals only; HRV, EEG and vitals flags arrive on USB.
 - `connect()`, `runDiagnostics(ip, port:)`, `diagnosticTest(ip, port:)`. Always check `isConnected` before touching `connectedDevice`.
-- Control/OTA over WiFi uses a **separate** TCP port **9000** (SMP passthrough), not 5000.
+- Control/OTA over WiFi would use TCP **9000** (SMP passthrough), but the ESP32 firmware has no such relay yet, so Studio offers no Wi-Fi control.
 - `removeDataListener` is a documented no-op under the stream architecture.
 - **macOS "Operation not permitted (errno=1)":** almost always the app firewall or an IPv4/IPv6 mismatch. Diagnose with `nc -zv <ip> 5000`, `lsof -i :5000`, `tcpdump -i en0 port 5000`. errno map: 1=EPERM(firewall), 111=ECONNREFUSED, 113=EHOSTUNREACH, 110=ETIMEDOUT. A healthy stream logs `Binary data received: … starts with 0x0A, 0xFA`.
 
