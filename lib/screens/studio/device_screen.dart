@@ -9,6 +9,7 @@ import '../../services/data_parser.dart';
 import '../../services/device_status_service.dart';
 import '../../services/live_data_pump.dart';
 import '../../services/firmware/bundle.dart';
+import '../../services/firmware/c6_guard.dart';
 import '../../services/firmware/firmware_updater.dart';
 import '../../services/firmware_update_service.dart';
 import '../../services/smp_serial_client.dart';
@@ -687,19 +688,28 @@ class _FirmwareColumn extends StatelessWidget {
                       'again to bring it into line.' : ''}',
                   color: r.m4Behind ? p.warning : p.success,
                 )
-              else if (outcome != null)
+              else if (outcome != null) ...[
                 HpiNote(
                   outcome.applied.isEmpty
-                      ? 'Nothing to install: the device already runs these '
-                          'versions.'
+                      ? (outcome.c6NotApplied == null
+                          ? 'Nothing to install: the device already runs these '
+                              'versions.'
+                          : 'Nothing installed: the M7 and M4 already run '
+                              'these versions.')
                       : outcome.ok
-                          ? 'Installed and verified. The device reports '
+                          ? '${outcome.applied.map((n) => n.toUpperCase()).join(' and ')} '
+                              'installed and verified. The device reports '
                               'M7 ${outcome.versionsAfter['m7'] ?? '—'}, '
                               'M4 ${_orDash(outcome.versionsAfter['m4'])}.'
                           : 'The device came back, but did not report the '
                               'expected firmware. See the log below.',
                   color: outcome.ok ? p.success : p.error,
                 ),
+                // Never let a success note stand for the whole bundle when
+                // the C6 part of it was left out.
+                if (outcome.c6NotApplied case final c6?)
+                  HpiNote('ESP32-C6 not updated: $c6', color: p.warning),
+              ],
               if (fw.log.isNotEmpty)
                 HpiWell(
                   child: Padding(
@@ -773,15 +783,7 @@ class _FirmwareColumn extends StatelessWidget {
                   icon: Icons.restart_alt,
                   title: 'Reboot device',
                   onTap: usb.controlConnected && !fw.busy
-                      ? () async {
-                          await usb.control.osReset();
-                          if (context.mounted) {
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(
-                                  content: Text('Reset command sent')),
-                            );
-                          }
-                        }
+                      ? () => _reboot(context, usb.control)
                       : null,
                 ),
                 HpiActionRow(
@@ -912,6 +914,16 @@ Future<void> _confirmEnterRecovery(BuildContext context) async {
 }
 
 String _orDash(String? s) => s == null || s.isEmpty ? '—' : s;
+
+/// Reboot, unless that would roll back an ESP32-C6 update.
+Future<void> _reboot(BuildContext context, SmpSerialClient control) async {
+  final busy = await espBusyReason(control);
+  final failure = busy == null ? await control.osReset() : null;
+  if (!context.mounted) return;
+  final text = busy ??
+      (failure == null ? 'Reset command sent' : resetRefusalText(failure));
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+}
 
 /// Show the device's answer to a control command: the failure by name, or
 /// [success].

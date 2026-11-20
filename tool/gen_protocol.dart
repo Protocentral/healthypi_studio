@@ -197,6 +197,8 @@ String _group64(Map<String, dynamic> c) {
       if (cmd['unlock'] == true) 'unlock: true',
       if (cmd['signed_build'] == true) 'signedBuild: true',
       if (errors.isNotEmpty) 'errors: [${errors.join(', ')}]',
+      if (cmd['timeout_s'] case final num t)
+        'timeout: Duration(milliseconds: ${(t * 1000).round()})',
     ];
     out.write(_doc((cmd['doc'] as String?) ?? '', '  '));
     out.writeln('  static const ${_camel(cmd['name'])} = HpiCommand(${cmd['id']}, ${args.join(', ')});');
@@ -263,7 +265,59 @@ String _group64(Map<String, dynamic> c) {
     out.writeln('  },');
   }
   out.writeln('};');
+
+  final espfw = c['espfw'] as Map<String, dynamic>?;
+  if (espfw != null) _espfw(out, espfw);
   return out.toString();
+}
+
+/// Name constants and a name table for one `espfw_status` code namespace.
+void _codeTable(StringBuffer out, String cls, String table, String doc,
+    Map<String, dynamic> codes) {
+  out
+    ..writeln()
+    ..write(_doc(doc, ''))
+    ..writeln('abstract final class $cls {');
+  for (final e in codes.entries) {
+    out.writeln('  static const int ${_camel(e.value as String)} = ${e.key};');
+  }
+  out
+    ..writeln('}')
+    ..writeln()
+    ..writeln('/// Names for [$cls] codes.')
+    ..writeln('const Map<int, String> $table = {');
+  for (final e in codes.entries) {
+    out.writeln('  ${e.key}: ${_str(e.value as String)},');
+  }
+  out.writeln('};');
+}
+
+/// The ESP32-C6 update limits and `espfw_status` code tables.
+void _espfw(StringBuffer out, Map<String, dynamic> e) {
+  int ms(String k) => ((e[k] as num) * 1000).round();
+  out
+    ..writeln()
+    ..writeln('/// ESP32-C6 update (`espfw_*`) limits.')
+    ..writeln('abstract final class HpiEspfw {')
+    ..writeln('  /// Largest `data` one `espfw_chunk` may carry.')
+    ..writeln('  static const int maxChunk = ${e['max_chunk']};')
+    ..writeln()
+    ..writeln('  /// Per-request timeout for every `espfw_*` command.')
+    ..writeln('  static const Duration timeout = Duration(milliseconds: ${ms('timeout_s')});')
+    ..writeln()
+    ..writeln('  /// Device-side bound on one `espfw_chunk` reply.')
+    ..writeln('  static const Duration chunkDeviceBound = '
+        'Duration(milliseconds: ${ms('chunk_device_bound_s')});')
+    ..writeln('}');
+  _codeTable(out, 'HpiEspfwState', 'hpiEspfwStates',
+      '`espfw_status.st`: the update session state.',
+      (e['states'] as Map).cast<String, dynamic>());
+  _codeTable(out, 'HpiEspfwErr', 'hpiEspfwErrors',
+      "`espfw_status.err`: the M7 update service's error.",
+      (e['errors'] as Map).cast<String, dynamic>());
+  _codeTable(out, 'HpiEspfwC6Err', 'hpiEspfwC6Errors',
+      "`espfw_status.c6_err`: the C6's own OTA status code, passed through.",
+      (e['c6_errors'] as Map).cast<String, dynamic>());
 }
 
 // -------------------------------------------------------------- formats ----

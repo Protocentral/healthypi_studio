@@ -1,7 +1,7 @@
 {
-  "tool_version": "0.1.0",
+  "tool_version": "0.2.0",
   "group_id": 64,
-  "schema_version": 2,
+  "schema_version": 3,
   "commands": [
     {
       "id": "0x0001",
@@ -238,7 +238,8 @@
         },
         {
           "name": "charge",
-          "type": "uint"
+          "type": "uint",
+          "doc": "0 discharging, 1 charging, 2 full, 3 fault (charger timer)"
         },
         {
           "name": "usb",
@@ -1213,7 +1214,194 @@
       "errors": [
         256
       ],
-      "doc": "reboots into MCUboot serial recovery; group 64 disappears until reflash"
+      "doc": "reboots into MCUboot serial recovery; group 64 disappears until reflash. write refuses arm with 274 while an ESP32-C6 update is active"
+    },
+    {
+      "id": "0x00A6",
+      "name": "espfw_begin",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": true,
+      "timeout_s": 5.0,
+      "request": [
+        {
+          "name": "len",
+          "type": "uint",
+          "doc": "image size, bytes (the .bin, not the merged image)"
+        },
+        {
+          "name": "sha",
+          "type": "bstr",
+          "doc": "SHA-256 of the image"
+        },
+        {
+          "name": "sig",
+          "type": "bstr",
+          "doc": "ECDSA-P256 r||s over sha, release key -- REQUIRED"
+        }
+      ],
+      "errors": [
+        256,
+        257,
+        260,
+        268,
+        269,
+        270
+      ],
+      "doc": "verifies the signature, then returns at once; poll espfw_status until st=2 (receiving) or 8 (failed). 268 = bad signature, nothing sent"
+    },
+    {
+      "id": "0x00A7",
+      "name": "espfw_chunk",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": true,
+      "timeout_s": 5.0,
+      "request": [
+        {
+          "name": "off",
+          "type": "uint"
+        },
+        {
+          "name": "data",
+          "type": "bstr",
+          "doc": "1-1016 bytes"
+        }
+      ],
+      "response": [
+        {
+          "name": "off",
+          "type": "uint",
+          "doc": "next expected offset"
+        }
+      ],
+      "errors": [
+        256,
+        257,
+        260,
+        272,
+        273
+      ],
+      "doc": "relayed to the C6 before the reply (<= 1.6 s). 272: resend the SAME chunk; resending the last accepted chunk is harmless. 273: session over"
+    },
+    {
+      "id": "0x00A8",
+      "name": "espfw_commit",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": true,
+      "signed_build": true,
+      "timeout_s": 5.0,
+      "errors": [
+        256,
+        257,
+        268,
+        275
+      ],
+      "doc": "checks length and digest, then returns at once; never resend it -- poll espfw_status until st is 6 done, 7 rolled back, 8 failed or 9 timeout"
+    },
+    {
+      "id": "0x00A9",
+      "name": "espfw_status",
+      "ops": [
+        "read"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": true,
+      "timeout_s": 5.0,
+      "response": [
+        {
+          "name": "st",
+          "type": "uint",
+          "doc": "session state, ESPFW_STATES"
+        },
+        {
+          "name": "len",
+          "type": "uint",
+          "doc": "image size announced at begin"
+        },
+        {
+          "name": "rx",
+          "type": "uint",
+          "doc": "bytes relayed and acknowledged by the C6"
+        },
+        {
+          "name": "err",
+          "type": "uint",
+          "doc": "M7 service error, ESPFW_ERRORS"
+        },
+        {
+          "name": "c6_err",
+          "type": "uint",
+          "doc": "raw C6 OTA status code of the last refusal"
+        },
+        {
+          "name": "c6_st",
+          "type": "uint",
+          "doc": "C6 receiver state; 255 unknown"
+        },
+        {
+          "name": "img",
+          "type": "uint",
+          "doc": "C6 running image state; 255 unknown"
+        },
+        {
+          "name": "other",
+          "type": "uint",
+          "doc": "C6 other slot's image state; 255 unknown"
+        },
+        {
+          "name": "slot",
+          "type": "uint",
+          "doc": "C6 running slot; 255 unknown"
+        },
+        {
+          "name": "ver",
+          "type": "tstr",
+          "doc": "C6 running version, '' if unknown"
+        },
+        {
+          "name": "valid",
+          "type": "bool",
+          "doc": "running image is VALID"
+        },
+        {
+          "name": "pend",
+          "type": "bool",
+          "doc": "running image is PENDING_VERIFY"
+        },
+        {
+          "name": "busy",
+          "type": "bool",
+          "doc": "a C6 or M7 reset now would lose the update"
+        }
+      ],
+      "doc": "answered from cache; never touches the link. Safe to poll at 1 Hz"
+    },
+    {
+      "id": "0x00AA",
+      "name": "espfw_abort",
+      "ops": [
+        "write"
+      ],
+      "status": "live",
+      "unlock": false,
+      "signed_build": true,
+      "timeout_s": 5.0,
+      "errors": [
+        256,
+        270
+      ],
+      "doc": "sends ABORT before COMMIT (C6 untouched); 270 once COMMIT has gone. On a finished session it clears the result"
     }
   ],
   "errors": {
@@ -1232,7 +1420,11 @@
     "268": "IMAGE_INVALID",
     "269": "IMAGE_TOO_LARGE",
     "270": "BUSY",
-    "271": "IMAGE_NOT_M4"
+    "271": "IMAGE_NOT_M4",
+    "272": "ESP_NO_REPLY",
+    "273": "ESP_REFUSED",
+    "274": "ESP_UPDATE_ACTIVE",
+    "275": "IMAGE_INCOMPLETE"
   },
   "error_hints": {
     "256": "busy, or a prerequisite is missing (no card, dev build)",
@@ -1250,7 +1442,11 @@
     "268": "digest or signature mismatch",
     "269": "exceeds staging or bank 2",
     "270": "an update is already in flight",
-    "271": "verifies, but is not an M4 image"
+    "271": "verifies, but is not an M4 image",
+    "272": "the ESP32-C6 did not answer in time; resend the same request",
+    "273": "the ESP32-C6 refused; the update session is over -- see espfw_status",
+    "274": "refused: an ESP32-C6 update is in transfer or its new image is still proving itself; a reset now would roll it back",
+    "275": "commit before every byte of the image was sent"
   },
   "stock_errors": {
     "0": {
@@ -1263,5 +1459,60 @@
       "6": "QUERY_RESPONSE_VALUE_NOT_VALID",
       "7": "HEAP_STATS_FETCH_FAILED"
     }
+  },
+  "espfw": {
+    "states": {
+      "0": "IDLE",
+      "1": "PREPARING",
+      "2": "RECEIVING",
+      "3": "COMMITTING",
+      "4": "REBOOTING",
+      "5": "VERIFYING",
+      "6": "DONE",
+      "7": "ROLLED_BACK",
+      "8": "FAILED",
+      "9": "TIMEOUT"
+    },
+    "errors": {
+      "0": "NONE",
+      "1": "SIG_INVALID",
+      "2": "LINK",
+      "3": "NO_OTA",
+      "4": "C6_REFUSED",
+      "5": "NO_REPLY",
+      "6": "PROTOCOL",
+      "7": "DIGEST",
+      "8": "INCOMPLETE",
+      "9": "ABORTED",
+      "10": "HOST_IDLE",
+      "11": "CRYPTO",
+      "12": "NOT_BACK",
+      "13": "NOT_VALID",
+      "14": "ROLLED_BACK",
+      "15": "NOT_SWITCHED"
+    },
+    "c6_errors": {
+      "0": "OK",
+      "1": "BUSY",
+      "2": "BAD_SIZE",
+      "3": "BAD_OFFSET",
+      "4": "FLASH_WRITE",
+      "5": "DIGEST_MISMATCH",
+      "6": "IMAGE_INVALID",
+      "7": "NOT_IN_TRANSFER",
+      "8": "RUNNING_UNCONFIRMED",
+      "9": "INCOMPLETE",
+      "10": "FLASH_READ",
+      "11": "BOOT_SET",
+      "12": "BAD_REQUEST",
+      "13": "UNKNOWN_OP",
+      "14": "TIMEOUT",
+      "15": "NO_SLOT",
+      "16": "INTERNAL",
+      "17": "ABORTED"
+    },
+    "max_chunk": 1016,
+    "timeout_s": 5.0,
+    "chunk_device_bound_s": 1.6
   }
 }
