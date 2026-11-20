@@ -138,6 +138,31 @@ void main() {
     });
   });
 
+  group('ESP32-C6 entry', () {
+    final c6 = Uint8List.fromList(List<int>.generate(64, (i) => i));
+
+    test('the C6 is applied last, after the M4 and M7 and their resets', () {
+      expect(FirmwareBundle.applyOrder, ['m4', 'm7', 'esp32c6']);
+    });
+
+    test('a signed group-64 entry is usable', () {
+      final b = FirmwareBundle.open(
+          buildBundle(signer, {'esp32c6': ('1.2.0', c6)}),
+          keys: [signer.key]);
+      final img = b.images['esp32c6']!;
+      expect(img.transport, BundleImage.c6Transport);
+      expect(img.signature, hasLength(64));
+      expect(img.isUsableC6, isTrue);
+    });
+
+    test('an unsigned esp-ota-http entry from an older bundle is not', () {
+      final b = FirmwareBundle.open(
+          buildBundle(signer, {'esp32c6': ('1.2.0', c6)}, legacyC6: true),
+          keys: [signer.key]);
+      expect(b.images['esp32c6']!.isUsableC6, isFalse);
+    });
+  });
+
   group('versions', () {
     test('suffixes are a build flavour, not an ordering', () {
       expect(sameVersion('1.0.2-dev', '1.0.2'), isTrue);

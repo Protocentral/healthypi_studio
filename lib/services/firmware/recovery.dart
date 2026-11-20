@@ -1,6 +1,7 @@
 import 'dart:typed_data';
 
 import '../smp_serial_client.dart';
+import 'c6_guard.dart';
 import 'firmware_updater.dart';
 
 /// MCUboot serial recovery: the floor beneath a failed update.
@@ -44,8 +45,11 @@ class FirmwareRecovery {
   void _log(String line) => log?.call(line);
 
   /// Ask a running application to reboot into serial recovery. Returns null
-  /// once it is rebooting, or why it will not.
+  /// once it is rebooting, or why it will not. Refuses while an ESP32-C6
+  /// update could be lost to the reset, as the device itself does.
   static Future<String?> enterRecovery(SmpSerialClient client) async {
+    final busy = await espBusyReason(client);
+    if (busy != null) return busy;
     final state = await client.recoveryState();
     if (!state.ok) {
       return 'Recovery state read failed: ${state.failure!.label}. Only the '
@@ -59,7 +63,9 @@ class FirmwareRecovery {
     // The device may reset before its reply gets out; no reply is expected
     // as often as a reply.
     if (!r.ok && r.failure!.rc != null) {
-      return 'Enter recovery failed: ${r.failure!.label}';
+      return r.failure!.isEspUpdateActive
+          ? espUpdateActiveText
+          : 'Enter recovery failed: ${r.failure!.label}';
     }
     return null;
   }

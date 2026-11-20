@@ -1,5 +1,5 @@
 {
-  "tool_version": "0.1.0",
+  "tool_version": "0.2.0",
   "file_version": "0x0300",
   "dblk_header_len": 28,
   "dblk_crc_len": 4,

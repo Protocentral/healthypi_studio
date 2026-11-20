@@ -108,13 +108,18 @@ class SmpSerialClient {
 
   // ---- group 64 control commands ----
 
+  /// Timeout for a request whose command and caller name none.
+  static const Duration defaultTimeout = Duration(seconds: 3);
+
   /// Send [command] and read its reply. [write] picks the SMP op for a command
-  /// that supports both; otherwise the command's only op is used.
+  /// that supports both; otherwise the command's only op is used. [timeout]
+  /// defaults to the one the catalog sets for the command (every `espfw_*`
+  /// needs 5 s), else [defaultTimeout].
   Future<HpiResult<Map<String, Object?>>> request(
     HpiCommand command, {
     Map<String, Object?> payload = const {},
     bool? write,
-    Duration timeout = const Duration(seconds: 3),
+    Duration? timeout,
   }) async {
     final SmpClient? client = _client;
     if (client == null || !isOpen) {
@@ -124,7 +129,7 @@ class SmpSerialClient {
     if (useWrite ? !command.write : !command.read) {
       throw ArgumentError('$command has no ${useWrite ? "write" : "read"} op');
     }
-    client.timeout = timeout;
+    client.timeout = timeout ?? command.timeout ?? defaultTimeout;
     try {
       final SmpMessage rsp = await client.send(
         op: useWrite ? SmpOp.writeReq : SmpOp.readReq,
@@ -150,7 +155,7 @@ class SmpSerialClient {
     T Function(Map<Object?, Object?>) parse, {
     Map<String, Object?> payload = const {},
     bool? write,
-    Duration timeout = const Duration(seconds: 3),
+    Duration? timeout,
   }) async {
     final r = await request(command,
         payload: payload, write: write, timeout: timeout);
@@ -335,6 +340,38 @@ class SmpSerialClient {
         write: true,
       );
 
+  // ---- ESP32-C6 update (group 64, relayed by the M7; signed builds only) ----
+  //
+  // docs/MCUMGR_COMMANDS.md §5.12 in healthypi-6-fw. Every espfw_* request
+  // uses the catalog's 5 s timeout (HpiEspfw.timeout).
+
+  /// The update session and the C6's slots. Answered from the M7's cache, so
+  /// it is safe to poll at 1 Hz. Fails with rc 8 (ENOTSUP) on firmware without
+  /// the C6 update service. `busy` means a reset now would lose an update.
+  Future<HpiResult<EspfwStatusReply>> espfwStatus() =>
+      _typed(Hpi.espfwStatus, EspfwStatusReply.fromMap);
+
+  /// Open a session for an image of [len] bytes with SHA-256 [sha] and the
+  /// bundle's ECDSA signature [sig]. 268 means the signature was refused and
+  /// nothing was sent.
+  Future<HpiResult<void>> espfwBegin(
+          {required int len, required List<int> sha, required List<int> sig}) =>
+      request(Hpi.espfwBegin,
+          payload: espfwBeginRequest(len: len, sha: sha, sig: sig));
+
+  /// One chunk, relayed to the C6 before the reply. The reply's `off` is the
+  /// next offset the device expects.
+  Future<HpiResult<EspfwChunkReply>> espfwChunk(int off, List<int> data) =>
+      _typed(Hpi.espfwChunk, EspfwChunkReply.fromMap,
+          payload: espfwChunkRequest(off: off, data: data));
+
+  /// Check length and digest and hand the image to the C6. Send it once: a
+  /// lost reply is not a reason to resend; read [espfwStatus] instead.
+  Future<HpiResult<void>> espfwCommit() => request(Hpi.espfwCommit);
+
+  /// Abandon a session before commit. The C6 keeps its running image.
+  Future<HpiResult<void>> espfwAbort() => request(Hpi.espfwAbort);
+
   // ---- firmware update (M7, MCUboot img group) ----
 
   /// Upload [image] to MCUboot image 0. The device routes it to that image's
@@ -426,18 +463,32 @@ class SmpSerialClient {
   }
 
   /// os reset — reboot into MCUboot to install pending images.
-  Future<bool> osReset({Duration timeout = const Duration(seconds: 3)}) async {
-    final OsMgmt? os = _os;
+  ///
+  /// Returns null once the reset is under way, or why it did not happen: the
+  /// link is not open, or the device refused. While an ESP32-C6 update is in
+  /// flight, or the C6's new image is still proving itself, the firmware
+  /// refuses with ESP_UPDATE_ACTIVE (274, [HpiFailure.isEspUpdateActive])
+  /// rather than roll that update back.
+  Future<HpiFailure?> osReset(
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    const cmd = HpiCommand(OsMgmt.idReset, 'os reset', write: true);
     final SmpClient? client = _client;
-    if (os == null || client == null || !isOpen) return false;
+    if (client == null || !isOpen) return HpiFailure.notConnected(cmd);
     client.timeout = timeout;
     try {
-      await os.reset();
-      return true;
+      final rsp = await client.send(
+          op: SmpOp.writeReq, group: OsMgmt.group, id: OsMgmt.idReset);
+      final rc = rsp.rc;
+      if (rc != null) {
+        final failure = HpiFailure.fromReply(cmd, rc, rsp.errGroup ?? OsMgmt.group);
+        debugPrint('⚠️ $cmd: ${failure.label}');
+        return failure;
+      }
+      return null;
     } catch (_) {
-      // The device usually resets before it can reply; a timeout here means the
+      // The device usually resets before it can reply; no reply means the
       // reset happened, not that it failed.
-      return true;
+      return null;
     }
   }
 }
@@ -468,6 +519,17 @@ class HpiFailure {
   /// The catalog entry for a group-64 error code.
   HpiErrorCode? get code =>
       rc != null && (group == null || group == hpiGroupId) ? hpiErrors[rc] : null;
+
+  /// The device refused because an ESP32-C6 update is in flight or its new
+  /// image is still proving itself (274 ESP_UPDATE_ACTIVE): a reset now
+  /// would roll it back.
+  bool get isEspUpdateActive => code?.code == espUpdateActive;
+
+  /// Group-64 ESP_UPDATE_ACTIVE.
+  static const int espUpdateActive = 274;
+
+  /// The device answered ENOTSUP: this firmware does not have the command.
+  bool get isNotSupported => rc == 8;
 
   /// A short, user-facing description, e.g. `NO_MEDIA — no SD card present`.
   String get label {

@@ -54,6 +54,7 @@ Uint8List buildBundle(
   TestSigner signer,
   Map<String, (String, Uint8List)> images, {
   String release = '1.0.2',
+  bool legacyC6 = false,
   void Function(Map<String, Uint8List> files)? mutate,
 }) {
   final manifestImages = <String, Object?>{};
@@ -61,13 +62,20 @@ Uint8List buildBundle(
   for (final e in images.entries) {
     final (version, data) = e.value;
     final digest = crypto.sha256.convert(data).bytes;
+    // The C6 travels signed over group 64 since 2026-11; [legacyC6] builds
+    // the older, unsigned `esp-ota-http` entry instead.
+    final c6 = e.key == 'esp32c6';
     manifestImages[e.key] = {
       'file': '${e.key}.bin',
       'sha256': crypto.sha256.convert(data).toString(),
       'size': data.length,
-      'transport': e.key == 'm7' ? 'mcumgr-img' : 'hpi-g64',
+      'transport': switch (e.key) {
+        'm7' => 'mcumgr-img',
+        'esp32c6' => legacyC6 ? 'esp-ota-http' : 'hpi-g64-esp',
+        _ => 'hpi-g64',
+      },
       'version': version,
-      if (e.key == 'm4')
+      if (e.key == 'm4' || (c6 && !legacyC6))
         'sig': signer
             .signDigest(digest)
             .map((b) => b.toRadixString(16).padLeft(2, '0'))

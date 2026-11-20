@@ -40,6 +40,11 @@ class _Board {
 
   bool imgGroup = true;
   int resets = 0;
+
+  // ESP32-C6, as the M7 reports it
+  String espfw = '';
+  bool espfwService = true;
+  Map<String, Object?>? espfwStatus;
   final List<String> calls = [];
 
   void reset() {
@@ -107,7 +112,11 @@ class _Board {
           calls.add('stream_stop');
           return {};
         case 0x31:
-          return {'m7fw': m7, 'm4fw': m4Bound ? m4 : '', 'espfw': ''};
+          return {'m7fw': m7, 'm4fw': m4Bound ? m4 : '', 'espfw': espfw};
+        case 0xA9:
+          calls.add('espfw_status');
+          if (!espfwService) return smpErr(8, group: 0);
+          return espfwStatus ?? {'st': 0, 'ver': espfw, 'busy': false};
         case 0xA3:
           return {
             'st': m4State,
@@ -273,6 +282,103 @@ void main() {
           .having((e) => e.message, 'message', contains('development build'))),
     );
     expect(board.calls, isNot(contains('img upload')));
+  });
+
+  group('ESP32-C6', () {
+    final c6Image = Uint8List.fromList(List<int>.generate(900, (i) => i * 3 & 0xFF));
+
+    test('a C6 update in progress blocks the update before anything is written',
+        () async {
+      board.espfwStatus = {
+        'st': 5, // VERIFYING
+        'ver': '1.2.0',
+        'rx': 0,
+        'len': 0,
+        'busy': true,
+      };
+      await expectLater(
+        updater().applyBundle(bundle({'m7': ('1.0.2', newM7)})),
+        throwsA(isA<UpdateException>().having((e) => e.message, 'message',
+            allOf(contains('verifying'), contains('roll that update back')))),
+      );
+      expect(board.calls, isNot(contains('stream_stop')));
+      expect(board.calls, isNot(contains('img upload')));
+      expect(board.resets, 0);
+    });
+
+    test("a pending image that is still proving itself blocks a raw M7 install",
+        () async {
+      board.espfwStatus = {'st': 0, 'ver': '1.2.0', 'busy': true};
+      await expectLater(
+        updater().applyM7Image(newM7),
+        throwsA(isA<UpdateException>().having(
+            (e) => e.message, 'message', contains('still proving itself'))),
+      );
+      expect(board.calls, isNot(contains('img upload')));
+    });
+
+    test('firmware without the C6 update service is not blocked', () async {
+      board.espfwService = false;
+      final out = await updater().applyM7Image(newM7);
+      expect(out.ok, isTrue, reason: log.join('\n'));
+    });
+
+    test('a newer C6 in the bundle is reported as not updated, never as done',
+        () async {
+      board.espfw = '1.1.0';
+      final out = await updater().applyBundle(bundle({
+        'm4': ('1.0.1', m4Image),
+        'm7': ('1.0.1', oldM7),
+        'esp32c6': ('1.2.0', c6Image),
+      }));
+      expect(out.applied, isEmpty);
+      expect(out.skipped, ['m4', 'm7', 'esp32c6']);
+      expect(out.c6NotApplied,
+          allOf(contains('1.2.0'), contains('runs 1.1.0'),
+              contains('healthypi fw update')));
+      expect(board.resets, 0);
+    });
+
+    test('the C6 is still left out after the M7 and M4 are installed', () async {
+      board.espfw = '1.1.0';
+      board.m4Incoming = '1.0.2';
+      final out = await updater().applyBundle(bundle({
+        'm4': ('1.0.2', m4Image),
+        'm7': ('1.0.2', newM7),
+        'esp32c6': ('1.2.0', c6Image),
+      }));
+      expect(out.ok, isTrue, reason: log.join('\n'));
+      expect(out.applied, ['m4', 'm7']);
+      expect(out.c6NotApplied, contains('healthypi fw update'));
+    });
+
+    test('a C6 held in reset is said to be of unknown version', () async {
+      final out = await updater().applyBundle(bundle({
+        'm7': ('1.0.1', oldM7),
+        'esp32c6': ('1.2.0', c6Image),
+      }));
+      expect(out.c6NotApplied, contains('unknown'));
+    });
+
+    test('no note when the C6 already runs the bundle\'s version', () async {
+      board.espfw = '1.2.0';
+      final out = await updater().applyBundle(bundle({
+        'm7': ('1.0.1', oldM7),
+        'esp32c6': ('1.2.0', c6Image),
+      }));
+      expect(out.c6NotApplied, isNull);
+    });
+
+    test('a pre-2026-11 C6 entry is named as unusable', () async {
+      board.espfw = '1.2.0';
+      final b = FirmwareBundle.open(
+          buildBundle(signer, {'m7': ('1.0.1', oldM7), 'esp32c6': ('1.2.0', c6Image)},
+              legacyC6: true),
+          keys: [signer.key]);
+      expect(b.images['esp32c6']!.isUsableC6, isFalse);
+      final out = await updater().applyBundle(b);
+      expect(out.c6NotApplied, contains('predates'));
+    });
   });
 
   test('a raw M7 image installs and is checked by its slot-0 hash', () async {

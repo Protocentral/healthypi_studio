@@ -114,4 +114,67 @@ void main() {
     expect(f.code, isNull);
     expect(f.label, 'RTC_NOT_SET');
   });
+  group('ESP32-C6 update commands', () {
+    test('every espfw_* carries the catalog 5 s timeout; other commands none',
+        () {
+      for (final c in Hpi.all) {
+        expect(c.timeout,
+            c.name.startsWith('espfw_') ? HpiEspfw.timeout : isNull,
+            reason: c.name);
+      }
+      expect(HpiEspfw.timeout, const Duration(seconds: 5));
+    });
+
+    test('the status code tables come from the catalog', () {
+      expect(hpiEspfwStates[HpiEspfwState.done], 'DONE');
+      expect(hpiEspfwErrors[HpiEspfwErr.noOta], 'NO_OTA');
+      expect(hpiEspfwC6Errors[HpiEspfwC6Err.noSlot], 'NO_SLOT');
+      expect(HpiEspfw.maxChunk, 1016);
+    });
+
+    test('espfw_status waits past the 3 s default for its reply', () async {
+      device.onRequest = (_) => null; // hold every request
+      final reply = client.espfwStatus();
+      await device.waitHeld(1);
+      await Future<void>.delayed(const Duration(milliseconds: 3500));
+      device.respond(device.held.single,
+          {'st': 0, 'ver': '1.1.0', 'slot': 1, 'busy': false});
+      final r = await reply;
+      expect(r.ok, isTrue, reason: r.failure?.label);
+      expect(r.value!.ver, '1.1.0');
+      expect(r.value!.slot, 1);
+    });
+
+    test('espfw_chunk goes out as a write with off and data', () async {
+      device.onRequest = (_) => {'off': 4};
+      final r = await client.espfwChunk(0, [1, 2, 3, 4]);
+      expect(r.value!.off, 4);
+      final req = device.requests.single;
+      expect((req.group, req.id, req.op), (64, 0xA7, SmpOp.writeReq));
+      expect(req.payload['data'], [1, 2, 3, 4]);
+    });
+  });
+
+  group('os reset', () {
+    test('a reset the device refuses with 274 is a failure, not a reset',
+        () async {
+      device.onRequest = (_) => smpErr(274);
+      final f = await client.osReset();
+      expect(f, isNotNull);
+      expect(f!.isEspUpdateActive, isTrue);
+    });
+
+    test('no reply means the reset happened', () async {
+      device.onRequest = (_) => null;
+      expect(await client.osReset(timeout: const Duration(milliseconds: 200)),
+          isNull);
+    });
+
+    test('an empty reply means the reset is under way', () async {
+      device.onRequest = (_) => {};
+      expect(await client.osReset(), isNull);
+      final req = device.requests.single;
+      expect((req.group, req.id), (0, 5));
+    });
+  });
 }

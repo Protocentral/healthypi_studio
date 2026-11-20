@@ -5,6 +5,7 @@ import 'package:mcumgr_dart/mcumgr_dart.dart';
 
 import '../smp_serial_client.dart';
 import 'bundle.dart';
+import 'c6_guard.dart';
 
 /// Applies a firmware bundle (zip) to a HealthyPi 6 over its control link.
 ///
@@ -33,7 +34,8 @@ class FirmwareUpdater {
   final SmpSerialClient Function() client;
 
   /// Reset the device and wait until the control link answers again. False
-  /// if it did not come back.
+  /// if it did not come back; throws [UpdateException] if the device refused
+  /// the reset.
   final Future<bool> Function() resetAndReconnect;
 
   final void Function(String line)? log;
@@ -59,6 +61,7 @@ class FirmwareUpdater {
       {bool force = false}) async {
     _stage(UpdateStage.checking);
     _log('Bundle ${bundle.release} (signed: ${bundle.signer.label})');
+    await _checkNoEspUpdate();
     final installed = await _versions();
     for (final name in FirmwareBundle.applyOrder) {
       final img = bundle.images[name];
@@ -75,6 +78,7 @@ class FirmwareUpdater {
 
     final plan = <String>[];
     final skipped = <String>[];
+    String? c6Note;
     for (final name in wanted) {
       final img = bundle.images[name]!;
       if (name == 'm7') {
@@ -82,7 +86,8 @@ class FirmwareUpdater {
         if (refusal != null) throw UpdateException(refusal);
       }
       if (name == 'esp32c6') {
-        _log('  esp32c6: skipped — Studio cannot update the Wi-Fi co-processor');
+        c6Note = _c6NotApplied(img, installed['esp32c6'] ?? '');
+        _log('  esp32c6: not applied — ${c6Note ?? 'already at ${img.version}'}');
         skipped.add(name);
         continue;
       }
@@ -96,7 +101,11 @@ class FirmwareUpdater {
     if (plan.isEmpty) {
       _stage(UpdateStage.done);
       return UpdateOutcome(
-          ok: true, applied: const [], skipped: skipped, versionsAfter: installed);
+          ok: true,
+          applied: const [],
+          skipped: skipped,
+          versionsAfter: installed,
+          c6NotApplied: c6Note);
     }
     _log('Plan: ${plan.join(' → ')}');
 
@@ -129,7 +138,29 @@ class FirmwareUpdater {
     if (m7Hash != null) ok &= await _m7Running(m7Hash);
     _stage(ok ? UpdateStage.done : UpdateStage.failed);
     return UpdateOutcome(
-        ok: ok, applied: plan, skipped: skipped, versionsAfter: after);
+        ok: ok,
+        applied: plan,
+        skipped: skipped,
+        versionsAfter: after,
+        c6NotApplied: c6Note);
+  }
+
+  /// Why the bundle's C6 image was left out, worded for the user, or null
+  /// when the C6 already runs it.
+  static String? _c6NotApplied(BundleImage img, String installed) {
+    if (!img.isUsableC6) {
+      return 'this bundle\'s ESP32-C6 entry (${img.version}) predates updating '
+          'the C6 over USB and cannot be applied by any tool. Use a current '
+          'bundle.';
+    }
+    if (sameVersion(installed, img.version)) return null;
+    final now = installed.isEmpty
+        ? 'its running version is unknown (it is held in reset until the '
+            'radio is turned on)'
+        : 'it runs $installed';
+    return 'this bundle also carries ESP32-C6 firmware ${img.version}, and '
+        '$now. Studio cannot update the ESP32-C6 yet: apply this bundle with '
+        '`healthypi fw update` to update it.';
   }
 
   /// Install a single raw M7 image (a development build outside a bundle).
@@ -137,6 +168,7 @@ class FirmwareUpdater {
   /// signature at boot.
   Future<UpdateOutcome> applyM7Image(Uint8List image) async {
     _stage(UpdateStage.checking);
+    await _checkNoEspUpdate();
     final info = _imageInfo(image);
     final installed = await _versions();
     await _checkSupport(const ['m7']);
@@ -153,6 +185,13 @@ class FirmwareUpdater {
   }
 
   // ---- steps ---------------------------------------------------------------
+
+  /// Every update ends in a reset, and a reset now would roll back an ESP32-C6
+  /// update in flight or still proving itself. Refuse before writing anything.
+  Future<void> _checkNoEspUpdate() async {
+    final busy = await espBusyReason(client());
+    if (busy != null) throw UpdateException(busy);
+  }
 
   Future<Map<String, String>> _versions() async {
     final r = await client().fwVersions();
@@ -418,6 +457,7 @@ class UpdateOutcome {
     required this.applied,
     required this.skipped,
     required this.versionsAfter,
+    this.c6NotApplied,
   });
 
   /// Every applied image reports the expected version and, for the M7, the
@@ -426,6 +466,10 @@ class UpdateOutcome {
   final List<String> applied;
   final List<String> skipped;
   final Map<String, String> versionsAfter;
+
+  /// Set when the bundle carries ESP32-C6 firmware the device does not run
+  /// and Studio left it out: what the user must do about it.
+  final String? c6NotApplied;
 }
 
 class UpdateException implements Exception {
