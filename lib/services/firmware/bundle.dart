@@ -25,9 +25,11 @@ class FirmwareBundle {
   /// Manifest `format` this reader understands.
   static const int formatVersion = 1;
 
-  /// Order images are applied in. The C6 updates itself over Wi-Fi and is not
-  /// applied by Studio.
-  static const List<String> applyOrder = ['esp32c6', 'm4', 'm7'];
+  /// Order images are applied in: M4, M7, the reset(s) they need, then the
+  /// ESP32-C6. The C6 goes last because its new image keeps its slot only if
+  /// nothing resets the device while it proves itself, and the M4 and M7
+  /// steps end in resets. Studio does not apply the C6 yet.
+  static const List<String> applyOrder = ['m4', 'm7', 'esp32c6'];
 
   final Map<String, dynamic> manifest;
   final Map<String, BundleImage> images;
@@ -163,12 +165,23 @@ class BundleImage {
   final String name;
   final String version;
 
-  /// `mcumgr-img`, `hpi-g64` or `esp-ota-http`.
+  /// `mcumgr-img` (M7), `hpi-g64` (M4) or `hpi-g64-esp` (C6). Bundles made
+  /// before 2026-11 carry the C6 as `esp-ota-http`, unsigned.
   final String transport;
   final Uint8List data;
 
-  /// Raw 64-byte `r || s` over the image's SHA-256 (the M4 carries one).
+  /// Raw 64-byte `r || s` over the image's SHA-256. The M4 and the C6 carry
+  /// one; the device checks it against the release key built into the M7.
   final Uint8List? signature;
+
+  /// How a C6 image travels: relayed by the M7 over group 64 (`espfw_*`).
+  static const String c6Transport = 'hpi-g64-esp';
+
+  /// A C6 entry the device can take: the current transport, signed. An entry
+  /// from a bundle made before the C6 became updatable over USB is not, and
+  /// must never be sent.
+  bool get isUsableC6 =>
+      name == 'esp32c6' && transport == c6Transport && signature?.length == 64;
 }
 
 class BundleException implements Exception {

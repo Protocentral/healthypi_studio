@@ -156,6 +156,24 @@ void main() {
       expect(device.requests.last.payload, {'arm': true, 'rst': true});
     });
 
+    test('refused while an ESP32-C6 update could be lost to the reset',
+        () async {
+      device.onRequest = (r) => r.id == 0xA9
+          ? {'st': 2, 'rx': 4096, 'len': 1511280, 'busy': true}
+          : {'av': true, 'armed': false};
+      expect(await FirmwareRecovery.enterRecovery(client),
+          allOf(contains('receiving'), contains('roll that update back')));
+      expect(device.requests.where((r) => r.op == SmpOp.writeReq), isEmpty);
+    });
+
+    test("the device's own 274 refusal is explained", () async {
+      device.onRequest = (r) => r.op == SmpOp.readReq
+          ? {'av': true, 'armed': false}
+          : smpErr(274);
+      expect(await FirmwareRecovery.enterRecovery(client),
+          contains('still proving itself'));
+    });
+
     test('a build without a bootloader says so and writes nothing', () async {
       device.onRequest = (r) => {'av': false, 'armed': false};
       expect(await FirmwareRecovery.enterRecovery(client),

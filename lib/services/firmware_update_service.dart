@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mcumgr_dart/mcumgr_dart.dart' show McuImageInfo;
 
 import 'firmware/bundle.dart';
+import 'firmware/c6_guard.dart';
 import 'firmware/firmware_updater.dart';
 import 'firmware/recovery.dart';
 import 'smp_serial_client.dart';
@@ -246,10 +247,12 @@ class FirmwareUpdateService extends ChangeNotifier {
     }
   }
 
-  /// Reset, then wait for the control port to answer again.
+  /// Reset, then wait for the control port to answer again. Throws
+  /// [UpdateException] if the device refuses the reset.
   Future<bool> _resetAndReconnect() async {
     _usb.expectReset();
-    await _usb.control.osReset();
+    final refused = await _usb.control.osReset();
+    if (refused != null) throw UpdateException(resetRefusalText(refused));
     await Future<void>.delayed(resetSettle);
     final deadline = DateTime.now().add(reconnectBudget);
     while (DateTime.now().isBefore(deadline)) {

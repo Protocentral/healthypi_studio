@@ -22,6 +22,7 @@ class HpiCommand {
     this.unlock = false,
     this.signedBuild = false,
     this.errors = const [],
+    this.timeout,
   });
 
   final int id;
@@ -42,6 +43,10 @@ class HpiCommand {
 
   /// Group-64 error codes this command documents.
   final List<int> errors;
+
+  /// The per-request timeout the catalog requires, or null for the client's
+  /// default.
+  final Duration? timeout;
 
   @override
   String toString() => '$name (0x${id.toRadixString(16).padLeft(4, '0')})';
