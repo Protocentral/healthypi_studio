@@ -2,6 +2,38 @@
 
 All notable changes to the HealthyPi Studio project will be documented in this file.
 
+## [1.1.0] - 2026-11-22
+
+### Added
+
+- **Firmware 1.0.0 release keys.** Release builds verify firmware bundles
+  against the HealthyPi 6 release key (`d57c8c67387cc57e`) and its backup
+  (`00ceeec92c5d119b`). The development key is trusted only in debug builds.
+- **Firmware bundles as `.zip`**, recognised by content, or as the folder a
+  browser extracted them to.
+- **Recovery mode**, and identification of the board by USB ids and protocol.
+- **Device page**: serial, versions, battery and RTC as the board reports them.
+- **Wi-Fi**: decodes the OpenView frames the ESP32 sends, and turns its radio
+  on and off.
+- **ESP32-C6 update groundwork**: protocol schema 3 (`espfw_*`), and a guard
+  that refuses a reset or recovery while a C6 image is still pending. Studio
+  does not update the C6 yet; the result says so and points to the
+  `healthypi` CLI.
+
+### Changed
+
+- **Firmware update rewritten** for the bootloader the device has: MCUboot is
+  overwrite-only (no trial or confirm), the M4 goes over group 64, and versions
+  and the M7 slot hash are read back after the reset. Still beta: not yet run
+  on hardware from Studio.
+- The group-64 command set and DBLK layouts are generated from the firmware
+  catalog, and every group-64 reply is read.
+
+### Fixed
+
+- `.HP6` format 0x0300 vitals are decoded, and HRV values the device does not
+  report are no longer shown.
+
 ## [Unreleased] — pre-1.0 fixes
 
 ### Fixed
