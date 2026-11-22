@@ -284,8 +284,9 @@ cases, each visible in the UI rather than hidden:
   the device secret, which Studio does not hold.
 * **Firmware update over Wi-Fi** — the ESP32 firmware has no TCP :9000 SMP
   relay yet, so the Device screen lists the option disabled, with that reason,
-  rather than offering a transport toggle that cannot connect. A bundle signed
-  by the development key shows its signer in amber.
+  rather than offering a transport toggle that cannot connect. Release builds
+  trust only the two release keys; a debug build also trusts the development
+  key, and a bundle it signed shows its signer in amber.
 * **Wi-Fi stream** — decoded as OpenView v2, which the co-processor sends, but
   not yet verified on hardware. Over Wi-Fi there are no vitals flags, so no
   HR-source label or lead-off tags, and no HRV packets.

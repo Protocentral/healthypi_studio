@@ -158,7 +158,7 @@ The firmware host-interface contract (STUDIO_INTEGRATION_NOTES / DUAL_CDC plan) 
 | `0x0080–0x0082` | diagnostics/self-test | 7 |
 | `0x0090–0x0092` | log streaming | 8 |
 
-**OTA status (beta):** not yet exercised on hardware from Studio, and only the development signing key is trusted. Group-64 error codes are surfaced by name everywhere (`HpiFailure.label`).
+**OTA status (beta):** not yet exercised on hardware from Studio, and a release build trusts only the two HealthyPi 6 release keys, primary and backup (a debug build also trusts the development key). Group-64 error codes are surfaced by name everywhere (`HpiFailure.label`).
 
 ---
 
