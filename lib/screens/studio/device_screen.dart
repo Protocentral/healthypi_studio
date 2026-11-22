@@ -51,7 +51,11 @@ class DeviceScreenState extends State<DeviceScreen> {
     }
     return [
       StatusItem(
-        usb.controlConnected ? 'Control port open (CDC1)' : 'No control port',
+        usb.controlConnected
+            ? (usb.isCore
+                ? 'SMP control and stream on one port'
+                : 'Control port open (CDC1)')
+            : 'No control port',
         icon: usb.controlConnected ? Icons.check_circle : Icons.info_outline,
         tone: usb.controlConnected ? p.success : p.textFaint,
       ),
@@ -79,13 +83,15 @@ class DeviceScreenState extends State<DeviceScreen> {
                 ? HpiBadge('Connected', tone: p.success)
                 : HpiBadge('No control port', tone: p.textMuted)),
         subtitle: usb.isConnected
-            ? 'HealthyPi 6 · ${usb.connectedPortName} · '
+            ? '${_model(usb)} · ${usb.connectedPortName} · '
                 '${parser.protocolVersionString}'
             : 'Connect a board over USB to read its identity and update firmware',
       ),
       child: ScreenColumns(
         sideWidth: 352,
-        side: const _FirmwareColumn(),
+        side: usb.isCore || fw.source == FirmwareSource.uf2
+            ? const _CoreFirmwareColumn()
+            : const _FirmwareColumn(),
         main: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -95,8 +101,12 @@ class DeviceScreenState extends State<DeviceScreen> {
             kCardGap,
             const _StatusCard(),
             kCardGap,
-            const _WifiCard(),
-            kCardGap,
+            // Wi-Fi provisioning goes through the HealthyPi 6's co-processor
+            // commands; the Core does not implement them (only conn_status).
+            if (!usb.isCore) ...[
+              const _WifiCard(),
+              kCardGap,
+            ],
             const Expanded(child: _SensorInventory()),
           ],
         ),
@@ -114,6 +124,8 @@ String _stageLabel(UpdateStage s) => switch (s) {
       UpdateStage.markingM7 => 'M7: marking for install',
       UpdateStage.resetting => 'Rebooting the device',
       UpdateStage.verifying => 'Reading back versions',
+      UpdateStage.waitingBootrom => 'Waiting for the boot ROM (BOOTSEL)',
+      UpdateStage.loadingUf2 => 'picotool: writing the image',
       UpdateStage.done => 'Done',
       UpdateStage.failed => 'Failed',
     };
@@ -121,9 +133,10 @@ String _stageLabel(UpdateStage s) => switch (s) {
 Future<void> _pickFirmware(BuildContext context) async {
   final fw = context.read<FirmwareUpdateService>();
   final res = await FilePicker.platform.pickFiles(
-    dialogTitle: 'Select a firmware bundle (.zip) or a signed M7 image (.bin)',
+    dialogTitle: 'Select a firmware bundle (.zip), a signed M7 image (.bin) or '
+        'a HealthyPi Core image (.uf2)',
     type: FileType.custom,
-    allowedExtensions: const ['zip', 'hpifw', 'bin'],
+    allowedExtensions: const ['zip', 'hpifw', 'bin', 'uf2'],
   );
   final path = res?.files.single.path;
   if (path != null) await fw.select(path);
@@ -157,7 +170,24 @@ class _IdentityCard extends StatelessWidget {
     // device_info, versions from fw_versions, both read over the control port
     // when it opens. A field the device did not send stays an em dash.
     final m4 = v?.m4fw ?? info?.m4fw;
-    final facts = <(String, String)>[
+    // A HealthyPi Core: one RP2350 application image, no M4, no lock; its
+    // RTC is not exposed over SMP, and control shares the data port.
+    final facts = usb.isCore
+        ? <(String, String)>[
+            ('Model', 'HealthyPi Core'),
+            ('Serial', _orDash(info?.sn)),
+            ('Board revision', _orDash(info?.br)),
+            ('Firmware', _orDash(status.coreFirmware ?? usb.firmwareVersion)),
+            ('ESP32-C6', _orDash(status.coreCoprocessorFirmware)),
+            ('Device uptime', info?.up == null ? '—' : formatDuration(Duration(seconds: info!.up!))),
+            ('Clock', '— (not reported by this firmware)'),
+            ('Transport', 'USB CDC · SMP'),
+            ('Port', usb.connectedPortName?.split('/').last ?? '—'),
+            ('Stream blocks', '${usb.coreStream.blocks}'),
+            ('Protocol', parser.protocolVersionString),
+            ('Stream uptime', formatDuration(pump.streamDuration)),
+          ]
+        : <(String, String)>[
       ('Model', usb.isConnected || wifi.isConnected ? 'HealthyPi 6' : '—'),
       ('Serial', _orDash(info?.sn)),
       ('Board revision', _orDash(info?.br)),
@@ -385,7 +415,8 @@ class _StatusCard extends StatelessWidget {
       ),
       ('SD file', _orDash(sd?.path), null),
       ('SD written', bytes(sd?.bytes), null),
-      ('Transfer Mode', usb.transferArmed ? 'armed' : 'off', null),
+      if (!usb.isCore)
+        ('Transfer Mode', usb.transferArmed ? 'armed' : 'off', null),
     ];
 
     return HpiCard(
@@ -855,6 +886,287 @@ class _FirmwareColumn extends StatelessWidget {
   }
 }
 
+/// Firmware update and maintenance for a HealthyPi Core.
+///
+/// No MCUboot on the Core: Studio reboots it into the RP2350 boot ROM
+/// (`reset_bootsel`) and loads a UF2 with picotool, then reconnects. Recovery
+/// mode, Transfer Mode and Wi-Fi provisioning are HealthyPi 6 features and are
+/// not offered here.
+class _CoreFirmwareColumn extends StatelessWidget {
+  const _CoreFirmwareColumn();
+
+  @override
+  Widget build(BuildContext context) {
+    final p = context.hpi;
+    final usb = context.watch<UsbSerialService>();
+    final fw = context.watch<FirmwareUpdateService>();
+    final uf2 = fw.uf2;
+    final outcome = fw.outcome;
+    final fraction = fw.progress.fraction;
+    final picotool = fw.picotoolPath;
+    final ready = usb.controlConnected && usb.isCore && !fw.busy;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        HpiCard(
+          borderColor: fw.busy || uf2 != null
+              ? p.accent.withValues(alpha: 0.35)
+              : null,
+          child: HpiColumn(
+            gap: 12,
+            children: [
+              Row(
+                children: [
+                  Icon(Icons.system_update, size: 18, color: p.accent),
+                  const SizedBox(width: 9),
+                  Expanded(child: HpiSectionTitle('Firmware update')),
+                ],
+              ),
+              _FileRow(
+                label: 'HealthyPi Core image (.uf2)',
+                path: fw.path,
+                enabled: !fw.busy,
+                onPick: () => _pickFirmware(context),
+              ),
+              if (fw.selectionError case final e?)
+                HpiNote(e, color: p.error)
+              else if (uf2 != null) ...[
+                HpiKeyValue('Image', '${(uf2.payloadBytes / 1024).toStringAsFixed(0)} KB '
+                    '· ${uf2.blockCount} blocks'),
+                const HpiKeyValue('Target', 'RP2350'),
+              ] else if (fw.source != FirmwareSource.none)
+                HpiNote('A HealthyPi 6 bundle or M7 image cannot be installed '
+                    'on a HealthyPi Core. Choose a .uf2.', color: p.warning),
+              HpiKeyValue('picotool', picotool ?? 'not found',
+                  valueColor: picotool == null ? p.warning : null),
+              if (picotool == null) HpiNote(fw.picotoolMissing, color: p.warning),
+              Row(
+                children: [
+                  HpiGhostButton(
+                    label: 'Choose picotool…',
+                    height: 28,
+                    onPressed: fw.busy ? null : () => _pickPicotool(context),
+                  ),
+                  if (fw.picotoolOverride != null) ...[
+                    const SizedBox(width: 8),
+                    HpiGhostButton(
+                      label: 'Search PATH',
+                      height: 28,
+                      onPressed: fw.busy ? null : () => fw.picotoolOverride = null,
+                    ),
+                  ],
+                ],
+              ),
+              if (fw.busy) ...[
+                Row(
+                  children: [
+                    Expanded(
+                      child: HpiMono(_stageLabel(fw.progress.stage),
+                          size: 11, color: p.textSecondary),
+                    ),
+                    if (fraction != null)
+                      HpiMono('${(fraction * 100).toStringAsFixed(0)}%',
+                          size: 11, color: p.accent),
+                  ],
+                ),
+                HpiMeter(fraction: fraction ?? 0, color: p.accent, height: 6),
+              ],
+              if (fw.error case final e?)
+                HpiNote(e, color: p.error)
+              else if (outcome != null)
+                HpiNote(
+                  outcome.ok
+                      ? 'Installed. The Core reports firmware '
+                          '${outcome.versionsAfter['fw']}.'
+                      : 'The image was loaded and the Core came back, but it '
+                          'did not report a firmware version.',
+                  color: outcome.ok ? p.success : p.warning,
+                ),
+              if (fw.log.isNotEmpty)
+                HpiWell(
+                  child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: HpiMono(fw.log.join('\n'),
+                        size: 10.5, color: p.textSecondary),
+                  ),
+                ),
+              const HpiRule(),
+              HpiNote(
+                'Studio reboots the Core into its boot ROM (BOOTSEL), loads the '
+                'image with picotool, then reconnects and reads the version '
+                'back. Keep the board plugged in; streaming stops for the '
+                'update.',
+              ),
+              if (fw.busy)
+                HpiGhostButton(
+                  label: 'Update in progress…',
+                  icon: Icons.hourglass_top,
+                  expand: true,
+                  onPressed: null,
+                )
+              else
+                HpiGhostButton(
+                  label: 'Install firmware',
+                  icon: Icons.upload,
+                  expand: true,
+                  tone: p.accent,
+                  onPressed: fw.canInstall ? fw.install : null,
+                ),
+              if (!usb.isConnected && uf2 != null) ...[
+                HpiNote('No Core connected. If the board is already in BOOTSEL '
+                    '(held while plugging in, or left there by a failed '
+                    'update), load the image straight away.'),
+                HpiGhostButton(
+                  label: 'Install into a board in BOOTSEL',
+                  icon: Icons.healing,
+                  expand: true,
+                  tone: p.warning,
+                  onPressed: fw.canInstallFromBootsel
+                      ? fw.installFromBootsel
+                      : null,
+                ),
+              ],
+            ],
+          ),
+        ),
+        kCardGap,
+        Expanded(
+          child: HpiCard(
+            child: HpiColumn(
+              gap: 10,
+              children: [
+                const HpiLabel('Maintenance'),
+                HpiActionRow(
+                  icon: Icons.restart_alt,
+                  title: 'Reboot device',
+                  onTap: ready
+                      ? () async {
+                          await usb.control.osReset();
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                  content: Text('Reset command sent')),
+                            );
+                          }
+                        }
+                      : null,
+                ),
+                HpiActionRow(
+                  icon: Icons.developer_board,
+                  title: 'Reboot into BOOTSEL (boot ROM)',
+                  onTap: ready ? () => _confirmBootsel(context, usb) : null,
+                ),
+                HpiActionRow(
+                  icon: Icons.play_arrow,
+                  title: 'Start device stream',
+                  onTap: ready
+                      ? () => _report(context, usb.setDeviceStreaming(true),
+                          'Device stream started')
+                      : null,
+                ),
+                HpiActionRow(
+                  icon: Icons.stop,
+                  title: 'Stop device stream',
+                  onTap: ready
+                      ? () => _report(context, usb.setDeviceStreaming(false),
+                          'Device stream stopped')
+                      : null,
+                ),
+                HpiActionRow(
+                  icon: Icons.sd_card,
+                  title: usb.deviceRecording
+                      ? 'Stop on-board recording'
+                      : 'Start on-board recording',
+                  onTap: ready
+                      ? () => _report(
+                          context,
+                          usb.setDeviceRecording(!usb.deviceRecording),
+                          usb.deviceRecording
+                              ? 'On-board recording stopped'
+                              : 'On-board recording started')
+                      : null,
+                ),
+                HpiActionRow(
+                  icon: Icons.memory,
+                  title: 'Put the ESP32-C6 in flash mode',
+                  onTap: ready ? () => _confirmC6Flash(context, usb) : null,
+                ),
+                const HpiRule(),
+                HpiNote(
+                  'The Core has no lock, recovery mode or Transfer Mode. Wi-Fi '
+                  'setup through Studio is not available on it yet.',
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+Future<void> _pickPicotool(BuildContext context) async {
+  final fw = context.read<FirmwareUpdateService>();
+  final res = await FilePicker.platform.pickFiles(
+    dialogTitle: 'Select the picotool executable',
+  );
+  final path = res?.files.single.path;
+  if (path != null) fw.picotoolOverride = path;
+}
+
+Future<bool> _confirm(BuildContext context, String title, String body,
+    String action) async {
+  final go = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(title),
+      content: Text(body),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: Text(action),
+        ),
+      ],
+    ),
+  );
+  return go == true;
+}
+
+Future<void> _confirmBootsel(BuildContext context, UsbSerialService usb) async {
+  final go = await _confirm(
+    context,
+    'Reboot into BOOTSEL?',
+    'The Core reboots into the RP2350 boot ROM and disappears as a serial '
+        'port. It stays there until a UF2 is loaded (Install firmware, with '
+        '"Install into a board in BOOTSEL") or it is power-cycled.',
+    'Reboot into BOOTSEL',
+  );
+  if (!go || !context.mounted) return;
+  final r = await usb.control.resetBootsel();
+  if (r.ok) await usb.disconnect();
+  if (!context.mounted) return;
+  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(r.ok ? 'Rebooting into BOOTSEL' : r.failure.toString())));
+}
+
+Future<void> _confirmC6Flash(BuildContext context, UsbSerialService usb) async {
+  final go = await _confirm(
+    context,
+    'Put the ESP32-C6 in flash mode?',
+    'The co-processor restarts into its ROM bootloader, ready for a flashing '
+        'tool on its own port. It stops bridging until it is reset.',
+    'Enter flash mode',
+  );
+  if (!go || !context.mounted) return;
+  await _report(context, usb.control.c6FlashMode().then((r) => r.failure),
+      'ESP32-C6 in flash mode');
+}
+
 Future<void> _toggleTransferMode(
     BuildContext context, UsbSerialService usb) async {
   if (!usb.transferArmed) {
@@ -912,6 +1224,9 @@ Future<void> _confirmEnterRecovery(BuildContext context) async {
 }
 
 String _orDash(String? s) => s == null || s.isEmpty ? '—' : s;
+
+String _model(UsbSerialService usb) =>
+    usb.isCore ? 'HealthyPi Core' : 'HealthyPi 6';
 
 /// Show the device's answer to a control command: the failure by name, or
 /// [success].

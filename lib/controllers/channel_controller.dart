@@ -213,6 +213,14 @@ class ChannelController extends ChangeNotifier {
     }
   }
 
+  /// Show or hide a channel. No-op (and no notification) if unchanged.
+  void setChannelVisibility(String channelId, bool visible) {
+    final channelData = _channels[channelId];
+    if (channelData == null || channelData.config.isVisible == visible) return;
+    channelData.config.isVisible = visible;
+    notifyListeners();
+  }
+
   /// Toggle channel visibility
   void toggleChannelVisibility(String channelId) {
     final channelData = _channels[channelId];

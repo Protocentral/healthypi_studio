@@ -96,6 +96,7 @@ class HealthyPiStudio extends StatelessWidget {
               final engine = context.read<RecordingEngine>();
               usb.addListener(() {
                 engine.deviceFirmwareVersion = usb.firmwareVersion ?? '';
+                engine.deviceModel = usb.isCore ? 'HealthyPi Core' : 'HealthyPi 6';
               });
             });
             return usb;

@@ -75,6 +75,18 @@ class LiveDataPump extends ChangeNotifier with WidgetsBindingObserver {
   /// every consumer of the `ppg` channel sees.
   static const double _ecgSampleRate = 500;
   static const double _wifiSampleRate = 250;
+
+  /// ECG rate of a HealthyPi Core's Studio stream (Core MASTER_PLAN 7.2:
+  /// 500 SPS ECG, 250 Hz PPG — the same 2:1 the DataParser's PPG FIFO is
+  /// locked to). Neither the stream nor any command reports the rate yet; if
+  /// the Core ever streams at another rate, this and that 2:1 lock both have
+  /// to follow it.
+  static const double coreEcgSampleRate = 500;
+
+  /// Channels a HealthyPi Core does not produce: it has one ECG lead
+  /// (`ecg1`) plus respiration and PPG, and no EEG. Hidden while a Core is
+  /// attached and shown again when it goes; the user can still re-show them.
+  static const List<String> coreAbsentChannels = ['ecg2', 'ecg3', 'eeg1', 'eeg2'];
   static const double ppgSampleRate = 125;
   static const double eegSampleRate = 250;
 
@@ -88,6 +100,9 @@ class LiveDataPump extends ChangeNotifier with WidgetsBindingObserver {
 
   late final ChannelController _controller;
   late final RecordingDataBridge _bridge;
+
+  /// Channels this pump hid for a Core, to restore when it detaches.
+  final List<String> _hiddenForCore = [];
 
   Timer? _simulationTimer;
   Timer? _vitalsTimer;
@@ -205,7 +220,32 @@ class LiveDataPump extends ChangeNotifier with WidgetsBindingObserver {
 
   // ── transport ──────────────────────────────────────────────────────────────
 
+  /// The waveform clock of the attached transport.
+  double get _deviceRate => _usb.isConnected
+      ? (_usb.isCore ? coreEcgSampleRate : _ecgSampleRate)
+      : _wifiSampleRate;
+
+  /// Hide the channels a Core does not produce while one is attached.
+  void _syncCoreChannels() {
+    final core = _usb.isConnected && _usb.isCore;
+    if (core && _hiddenForCore.isEmpty) {
+      for (final id in coreAbsentChannels) {
+        final ch = _controller.channels[id];
+        if (ch != null && ch.config.isVisible) {
+          _hiddenForCore.add(id);
+          _controller.setChannelVisibility(id, false);
+        }
+      }
+    } else if (!core && _hiddenForCore.isNotEmpty) {
+      for (final id in _hiddenForCore) {
+        _controller.setChannelVisibility(id, true);
+      }
+      _hiddenForCore.clear();
+    }
+  }
+
   void _onTransportChanged() {
+    _syncCoreChannels();
     final connected = hasDevice;
     if (connected && _source != LiveDataSource.device) {
       _source = LiveDataSource.device;
@@ -214,12 +254,11 @@ class LiveDataPump extends ChangeNotifier with WidgetsBindingObserver {
       _controller.clearAllData();
       _packetIndex = 0;
       _streamStart = DateTime.now();
-      _controller.updateSamplingRate(
-        _usb.isConnected ? _ecgSampleRate : _wifiSampleRate,
-      );
+      _controller.updateSamplingRate(_deviceRate);
       _throughput.startMonitoring(_usb.isConnected ? 'usb' : 'wifi');
       debugPrint('✅ Acquisition source: device '
-          '(${_usb.isConnected ? "USB 500 Hz" : "WiFi 250 Hz"})');
+          '(${_usb.isConnected ? (_usb.isCore ? "HealthyPi Core USB" : "USB") : "WiFi"} '
+          '${_deviceRate.toStringAsFixed(0)} Hz)');
       notifyListeners();
       return;
     }
@@ -238,9 +277,7 @@ class LiveDataPump extends ChangeNotifier with WidgetsBindingObserver {
 
     // Still connected but the active transport changed — follow its rate.
     if (connected) {
-      _controller.updateSamplingRate(
-        _usb.isConnected ? _ecgSampleRate : _wifiSampleRate,
-      );
+      _controller.updateSamplingRate(_deviceRate);
     }
   }
 

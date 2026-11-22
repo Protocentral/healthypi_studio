@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_libserialport/flutter_libserialport.dart';
-import 'package:mcumgr_dart/mcumgr_dart.dart' show ImageSlot;
+import 'package:mcumgr_dart/mcumgr_dart.dart' show ImageSlot, SmpMessage;
 import '../models/usb_device_info.dart';
+import '../protocol/hpi_core.dart';
+import '../protocol/hpi_group64.g.dart';
+import 'core_stream_router.dart';
 import 'data_parser.dart';
 import 'smp_serial_client.dart';
 
@@ -72,7 +75,11 @@ class UsbSerialService extends ChangeNotifier {
   }
   
   List<String> get availablePorts => List.unmodifiable(_availablePorts);
-  bool get isConnected => _port != null && _port!.isOpen;
+
+  /// A data source is attached: a HealthyPi 6's CDC0, or a HealthyPi Core's
+  /// one port with its control link open.
+  bool get isConnected =>
+      (_port != null && _port!.isOpen) || (_core && _control.isOpen);
   String? get connectedPortName => _connectedPortName;
   Stream<String> get dataStream => _dataStreamController.stream;
   Stream<Uint8List> get binaryDataStream => _binaryDataStreamController.stream;
@@ -256,6 +263,11 @@ class UsbSerialService extends ChangeNotifier {
   
   /// Connect to a serial port
   Future<bool> connect(String portName, {int baudRate = 921600}) async {
+    if (getPortInfo(portName).isCore) {
+      // One port, SMP only: the samples come as SMP notifications, so the
+      // port must never be opened as a raw DBLK stream.
+      return connectCore(portName);
+    }
     if (getPortInfo(portName).isRecovery) {
       // MCUboot serial recovery has no sample stream; opening it as one would
       // only feed SMP bytes to the parser. Recovery is driven from Device.
@@ -428,6 +440,7 @@ class UsbSerialService extends ChangeNotifier {
       await _control.streamStop(timeout: const Duration(milliseconds: 500));
     }
     _control.close();
+    _stopCore();
     _controlPortName = null;
     _lastControlFailure = null;
     _deviceRecording = false;
@@ -450,6 +463,85 @@ class UsbSerialService extends ChangeNotifier {
 
     _connectedPortName = null;
     notifyListeners();
+  }
+
+  // ---- HealthyPi Core: one CDC port, SMP control + stream notifications ----
+
+  bool _core = false;
+  StreamSubscription<SmpMessage>? _coreSub;
+  Timer? _coreWatch;
+  late final CoreStreamRouter _coreRouter =
+      CoreStreamRouter((bytes) => _dataParser?.parseBinaryData(bytes));
+
+  /// The attached board is a HealthyPi Core: one port carries control and the
+  /// sample stream, there is no MCUboot, M4, EEG, module bay or lock.
+  bool get isCore => _core;
+
+  /// Stream-notification counters for the current Core session.
+  CoreStreamRouter get coreStream => _coreRouter;
+
+  /// Ports whose descriptors say HealthyPi Core. Candidates only: Studio
+  /// confirms one with an SMP echo when it connects.
+  List<UsbDeviceInfo> get coreDevices =>
+      getAllPortsInfo().where((i) => i.isCore).toList();
+
+  /// Connect to a HealthyPi Core on [portName]: open SMP on its one port,
+  /// confirm with `os echo`, then route stream notifications into the
+  /// DataParser. False if the port does not open or does not answer, so a
+  /// HealthyPi 5 or another board on the shared VID:PID is never taken for a
+  /// Core.
+  Future<bool> connectCore(String portName) async {
+    if (isConnected || _control.isOpen) {
+      await disconnect(intentional: false);
+      await Future.delayed(const Duration(milliseconds: 200));
+    }
+    final name = portName.startsWith('/dev/tty.')
+        ? portName.replaceFirst('/dev/tty.', '/dev/cu.')
+        : portName;
+    if (!_control.open(name)) return false;
+    if (!await _control.echo()) {
+      debugPrint('⚠️ $name did not answer an SMP echo — not a HealthyPi Core');
+      _control.close();
+      return false;
+    }
+    _core = true;
+    _connectedPortName = name;
+    _controlPortName = name;
+    _knownControlPort = name;
+    _lastConnectedPortName = name;
+    _reconnectAttempts = 0;
+    _cancelReconnectTimer();
+    _coreRouter.reset();
+    _coreSub = _control.notifications.listen(_coreRouter.add);
+    // The SMP transport does not report an unplug, so watch the port list.
+    _coreWatch = Timer.periodic(const Duration(seconds: 2), (_) => _checkCorePort());
+    debugPrint('✅ HealthyPi Core on $name (control + stream on one port)');
+    notifyListeners();
+    if (autoStartStreaming) unawaited(_startStream());
+    unawaited(_readFirmwareVersion());
+    return true;
+  }
+
+  void _checkCorePort() {
+    final name = _connectedPortName;
+    if (!_core || name == null) return;
+    bool present;
+    try {
+      present = SerialPort.availablePorts.contains(name);
+    } catch (_) {
+      return;
+    }
+    if (present) return;
+    debugPrint('🔌 HealthyPi Core on $name went away');
+    unawaited(disconnect(intentional: false).then((_) => _scheduleReconnect()));
+  }
+
+  void _stopCore() {
+    _coreWatch?.cancel();
+    _coreWatch = null;
+    unawaited(_coreSub?.cancel());
+    _coreSub = null;
+    _core = false;
   }
 
   /// HealthyPi 6 units (in application mode), each as its group of CDC ports.
@@ -566,15 +658,21 @@ class UsbSerialService extends ChangeNotifier {
     }
   }
 
+  /// `stream_start` channels. A HealthyPi 6 sends vitals with ECG+PPG; a
+  /// HealthyPi Core sends them only when asked (bit 0x04).
+  int get _streamChannels => _core ? HpiCore.chAll : 0x03;
+
   Future<void> _startStream() async {
-    final r = await _control.streamStart(ch: 0x03, ann: 0x00); // ECG + PPG (+ vitals)
-    if (r.ok) debugPrint('✅ Control pipe $_controlPortName: stream started (ECG+PPG)');
+    final r = await _control.streamStart(ch: _streamChannels, ann: 0x00);
+    if (r.ok) debugPrint('✅ Control pipe $_controlPortName: stream started');
     _noteControl(r);
   }
 
-  /// Start or stop the device's CDC0 stream from the control pipe.
+  /// Start or stop the device's stream from the control pipe.
   Future<HpiFailure?> setDeviceStreaming(bool on) async {
-    final r = on ? await _control.streamStart() : await _control.streamStop();
+    final r = on
+        ? await _control.streamStart(ch: _streamChannels)
+        : await _control.streamStop();
     _noteControl(r);
     return r.failure;
   }
@@ -586,6 +684,16 @@ class UsbSerialService extends ChangeNotifier {
   /// and every consumer renders that as unknown rather than as a guess.
   Future<void> _readFirmwareVersion() async {
     try {
+      if (_core) {
+        // No MCUboot on a Core, so no image list to fall back on.
+        final v = HpiCoreVersions.firmware(
+            (await _control.request(Hpi.fwVersions)).value);
+        if (v == null) return;
+        _firmwareVersion = v;
+        debugPrint('✅ Core firmware version: $_firmwareVersion');
+        notifyListeners();
+        return;
+      }
       final v = (await _control.fwVersions()).value?.m7fw;
       if (v != null && v.isNotEmpty) {
         _firmwareVersion = v;

@@ -22,6 +22,12 @@ class UsbDeviceInfo {
   /// Whether this is identified as a HealthyPi 6 (application or recovery)
   final bool isHealthyPi;
 
+  /// A HealthyPi Core candidate: its USB ids and product string match
+  /// ([HealthyPiCoreUsb.matches]). Only a candidate until it answers an SMP
+  /// echo; its one CDC port carries both control and the sample stream.
+  bool get isCore =>
+      HealthyPiCoreUsb.matches(vendorId, productId, productDescription);
+
   /// A HealthyPi 6 in MCUboot serial recovery: one CDC port, no data stream.
   /// Never open it as a data port.
   bool get isRecovery =>
@@ -108,6 +114,36 @@ abstract final class HealthyPiUsb {
       vendorIds.contains(vid) && !(vid == 0x1209 && pid == healthyPi5Pid);
 }
 
+/// USB identity of a HealthyPi Core (RP2350B), and of the RP2350 ROM
+/// bootloader it reboots into for a firmware update.
+///
+/// For now the Core shares 1209:FF90 with the HealthyPi 5, so the ids alone
+/// do not say which board is plugged in: the product string does. A port is a
+/// Core only if both match, and Studio still confirms it with an SMP echo
+/// before using it. When the Core gets its own PID, add it to [productIds]
+/// (and, if no HealthyPi 5 shares it, the product check becomes a formality).
+abstract final class HealthyPiCoreUsb {
+  static const int vendorId = 0x1209;
+
+  /// PIDs a Core may enumerate with. 0xFF90 is shared with the HealthyPi 5.
+  static const Set<int> productIds = {HealthyPiUsb.healthyPi5Pid};
+
+  /// The USB product string the Core firmware reports.
+  static const String product = 'HealthyPi Core';
+  static const String manufacturer = 'ProtoCentral';
+
+  /// The RP2350 ROM bootloader (BOOTSEL), which `reset_bootsel` reboots into.
+  /// It has no serial port: it shows up as a USB drive and a PICOBOOT
+  /// interface, which picotool talks to.
+  static const int bootromVendorId = 0x2E8A;
+  static const int bootromProductId = 0x000F;
+
+  static bool matches(int vid, int pid, String? productString) =>
+      vid == vendorId &&
+      productIds.contains(pid) &&
+      (productString?.trim() == product);
+}
+
 /// Utility class for identifying and categorizing USB devices
 class UsbDeviceDetector {
   /// Check if a device is a HealthyPi 6 by its USB ids.
@@ -116,6 +152,8 @@ class UsbDeviceDetector {
 
   /// A display name for a port, from what the USB descriptors report.
   static String classifyDeviceType(int vid, int pid, String? product) {
+    // Before the HealthyPi 5 check: the two boards share 1209:FF90.
+    if (HealthyPiCoreUsb.matches(vid, pid, product)) return 'HealthyPi Core';
     if (HealthyPiUsb.isHealthyPi6(vid, pid)) {
       if (product?.contains('Recovery') ?? false) {
         return 'HealthyPi 6 — recovery mode';

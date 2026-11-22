@@ -4,14 +4,19 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:mcumgr_dart/mcumgr_dart.dart' show McuImageInfo;
 
+import '../protocol/hpi_core.dart';
+import '../protocol/hpi_group64.g.dart';
 import 'firmware/bundle.dart';
 import 'firmware/firmware_updater.dart';
+import 'firmware/picotool.dart';
 import 'firmware/recovery.dart';
+import 'firmware/uf2.dart';
+import 'firmware/uf2_updater.dart';
 import 'smp_serial_client.dart';
 import 'usb_serial_service.dart';
 
-/// What the user picked to install.
-enum FirmwareSource { none, bundle, rawM7 }
+/// What the user picked to install. [uf2] is a HealthyPi Core image.
+enum FirmwareSource { none, bundle, rawM7, uf2 }
 
 /// Firmware update over the USB control port (CDC1), for the Device screen.
 ///
@@ -34,6 +39,8 @@ class FirmwareUpdateService extends ChangeNotifier {
   Uint8List? _rawImage;
   String? _rawVersion;
   String? _selectionError;
+  Uf2Image? _uf2;
+  String? _picotoolOverride;
 
   bool _busy = false;
   UpdateProgress _progress = const UpdateProgress(UpdateStage.idle, 0, 0);
@@ -48,6 +55,24 @@ class FirmwareUpdateService extends ChangeNotifier {
   FirmwareBundle? get bundle => _bundle;
   String? get rawVersion => _rawVersion;
   String? get selectionError => _selectionError;
+
+  /// The selected HealthyPi Core image, when [source] is [FirmwareSource.uf2].
+  Uf2Image? get uf2 => _uf2;
+
+  /// The picotool executable the user chose, or null to search for one.
+  String? get picotoolOverride => _picotoolOverride;
+  set picotoolOverride(String? path) {
+    _picotoolOverride = (path == null || path.isEmpty) ? null : path;
+    notifyListeners();
+  }
+
+  PicotoolLocator get _locator => PicotoolLocator(override: _picotoolOverride);
+
+  /// The picotool a Core update would run, or null if none was found.
+  String? get picotoolPath => _locator.locate();
+
+  /// Why picotool cannot be used, when [picotoolPath] is null.
+  String get picotoolMissing => _locator.missingMessage;
   bool get busy => _busy;
   UpdateProgress get progress => _progress;
   List<String> get log => List.unmodifiable(_log);
@@ -65,8 +90,19 @@ class FirmwareUpdateService extends ChangeNotifier {
       ? _bundle!.images['m7']?.version
       : _rawVersion;
   bool get canRecover => !_busy && _m7Image != null;
+
+  /// A selection that fits the attached board: a UF2 for a HealthyPi Core,
+  /// a bundle or M7 image for a HealthyPi 6.
   bool get canInstall =>
-      !_busy && _usb.controlConnected && _source != FirmwareSource.none;
+      !_busy &&
+      _usb.controlConnected &&
+      _source != FirmwareSource.none &&
+      (_source == FirmwareSource.uf2) == _usb.isCore;
+
+  /// Load the selected UF2 into a board already in BOOTSEL (held there by
+  /// hand, or left there by a failed update). Needs no serial port.
+  bool get canInstallFromBootsel =>
+      !_busy && _source == FirmwareSource.uf2 && !_usb.isConnected;
 
   /// Load [path]: a firmware bundle — the zip (`.zip`, or `.hpifw` from older
   /// releases) or the folder it was extracted to — verified now, before
@@ -77,6 +113,7 @@ class FirmwareUpdateService extends ChangeNotifier {
     _bundle = null;
     _rawImage = null;
     _rawVersion = null;
+    _uf2 = null;
     _selectionError = null;
     _outcome = null;
     _error = null;
@@ -89,6 +126,16 @@ class FirmwareUpdateService extends ChangeNotifier {
         return;
       }
       final bytes = await File(path).readAsBytes();
+      if (Uf2Image.looksLikeUf2(bytes) || path.toLowerCase().endsWith('.uf2')) {
+        try {
+          _uf2 = Uf2Image.parse(bytes);
+          _source = FirmwareSource.uf2;
+        } on FormatException catch (e) {
+          _selectionError = 'Not a HealthyPi Core UF2: ${e.message}';
+        }
+        notifyListeners();
+        return;
+      }
       if (FirmwareBundle.looksLikeBundle(bytes)) {
         _bundle = FirmwareBundle.open(bytes);
         _source = FirmwareSource.bundle;
@@ -118,12 +165,14 @@ class FirmwareUpdateService extends ChangeNotifier {
     _bundle = null;
     _rawImage = null;
     _rawVersion = null;
+    _uf2 = null;
     _selectionError = null;
     notifyListeners();
   }
 
   Future<void> install() async {
     if (!canInstall) return;
+    if (_source == FirmwareSource.uf2) return _installUf2();
     _begin();
 
     final updater = FirmwareUpdater(
@@ -149,6 +198,60 @@ class FirmwareUpdateService extends ChangeNotifier {
       _busy = false;
       notifyListeners();
     }
+  }
+
+  /// Core update: reset_bootsel, then picotool, then reconnect
+  /// ([Uf2Updater]). [fromBootsel] skips the reset, for a board already in
+  /// the boot ROM.
+  Future<void> _installUf2({bool fromBootsel = false}) async {
+    final path = _path;
+    if (path == null) return;
+    _begin();
+    final exe = picotoolPath;
+    final updater = Uf2Updater(
+      picotool: exe == null ? null : Picotool(exe),
+      resetBootsel: () async => (await _usb.control.resetBootsel()).failure,
+      detach: () => _usb.disconnect(),
+      reattach: _reattachCore,
+      readVersion: () async {
+        final r = await _usb.control.request(Hpi.fwVersions);
+        return HpiCoreVersions.firmware(r.value);
+      },
+      log: _logLine,
+      onProgress: (p) {
+        _progress = p;
+        notifyListeners();
+      },
+    )..missingPicotool = picotoolMissing;
+    try {
+      _outcome = await updater.install(path,
+          versionBefore: _usb.firmwareVersion, alreadyInBootsel: fromBootsel);
+    } on UpdateException catch (e) {
+      _error = e.message;
+      _progress = const UpdateProgress(UpdateStage.failed, 0, 0);
+    } catch (e) {
+      _error = 'Update error: $e';
+      _progress = const UpdateProgress(UpdateStage.failed, 0, 0);
+    } finally {
+      _busy = false;
+      notifyListeners();
+    }
+  }
+
+  /// Load the selected UF2 into a board that is already in BOOTSEL.
+  Future<void> installFromBootsel() async {
+    if (!canInstallFromBootsel) return;
+    await _installUf2(fromBootsel: true);
+  }
+
+  /// One look for a re-enumerated Core: connect to the first port that says
+  /// HealthyPi Core and answers SMP.
+  Future<bool> _reattachCore() async {
+    await _usb.refreshDevices();
+    for (final d in _usb.coreDevices) {
+      if (await _usb.connectCore(d.portName)) return true;
+    }
+    return false;
   }
 
   void _begin() {

@@ -58,6 +58,9 @@ class RecordingEngine extends ChangeNotifier {
   /// engine keeps no dependency on the transport. Stamped into the file header;
   /// empty when no board answered, never a placeholder version.
   String deviceFirmwareVersion = '';
+
+  /// The attached board's model, stamped as the recording's device id.
+  String deviceModel = 'HealthyPi 6';
   Stream<RecordingStatus> get statusStream => _statusController.stream;
   Duration get elapsedTime {
     if (_recordingStartTime == null) return Duration.zero;
@@ -104,7 +107,7 @@ class RecordingEngine extends ChangeNotifier {
         // The firmware reports no serial over the stream or MCUmgr, so this
         // records the model. It is not a per-unit identifier and must not be
         // written as though it were.
-        deviceId: 'HealthyPi 6',
+        deviceId: deviceModel,
         firmwareVersion: deviceFirmwareVersion,
         channels: config.channels,
         subjectMetadata: config.subjectMetadata,

@@ -60,6 +60,20 @@ class FakeSmpDevice {
     }
   }
 
+  /// Send a frame nobody asked for, as a device-initiated notification.
+  void notify(SmpMessage message) {
+    for (final line in UartMcumgrCodec.encode(message.toBytes())) {
+      _socket?.add(line);
+    }
+  }
+
+  /// Wait until a client has connected.
+  Future<void> waitConnected() async {
+    while (_socket == null) {
+      await Future<void>.delayed(const Duration(milliseconds: 5));
+    }
+  }
+
   Future<void> close() async {
     _socket?.destroy();
     await _server.close();

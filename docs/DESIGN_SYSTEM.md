@@ -289,6 +289,13 @@ cases, each visible in the UI rather than hidden:
 * **Wi-Fi stream** — decoded as OpenView v2, which the co-processor sends, but
   not yet verified on hardware. Over Wi-Fi there are no vitals flags, so no
   HR-source label or lead-off tags, and no HRV packets.
+* **HealthyPi Core** — the Core reports one ECG lead, so Live hides Lead II,
+  V1 and EEG while one is attached rather than drawing flat lines. Device
+  shows no M4, lock, recovery, Transfer Mode or Wi-Fi card for it. Its clock
+  reads `— (not reported by this firmware)`: the Core's SMP group 0 has no
+  `datetime`. Its lock state is unknown (`lock_state` is ENOTSUP) and is
+  treated as unlocked. The firmware version comes from `fw_versions`, whose
+  key names the Core contract does not pin yet (`HpiCoreVersions`).
 * **No device attached** — Live runs the built-in generator and the badge reads
   `Demo data`, with the status line saying `Demo data · no device attached`.
 

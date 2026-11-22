@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../protocol/hpi_core.dart';
 import '../protocol/hpi_group64.g.dart';
 import 'firmware_update_service.dart';
 import 'smp_serial_client.dart';
@@ -28,6 +29,7 @@ class DeviceStatusService extends ChangeNotifier {
 
   DeviceInfoReply? _info;
   FwVersionsReply? _versions;
+  Map<Object?, Object?>? _versionsRaw;
   TelemetryReply? _telemetry;
   StreamStatusReply? _stream;
   SdStatusReply? _sd;
@@ -40,6 +42,15 @@ class DeviceStatusService extends ChangeNotifier {
 
   DeviceInfoReply? get info => _info;
   FwVersionsReply? get versions => _versions;
+
+  /// A HealthyPi Core's application firmware version, from `fw_versions`
+  /// (see [HpiCoreVersions]), else `device_info`. Null when not reported.
+  String? get coreFirmware =>
+      HpiCoreVersions.firmware(_versionsRaw) ?? _info?.fw;
+
+  /// A HealthyPi Core's ESP32-C6 version, when `fw_versions` reports one.
+  String? get coreCoprocessorFirmware =>
+      HpiCoreVersions.coprocessor(_versionsRaw) ?? _info?.espfw;
   TelemetryReply? get telemetry => _telemetry;
   StreamStatusReply? get stream => _stream;
   SdStatusReply? get sd => _sd;
@@ -55,7 +66,9 @@ class DeviceStatusService extends ChangeNotifier {
   bool get clockSetByStudio => _clockSetByStudio;
   String? get clockError => _clockError;
 
-  /// Known only once read; null means not reported.
+  /// Known only once read; null means not reported, and is treated as not
+  /// locked. `lock_state` 0 is LOCKED and 1 UNLOCKED (HealthyPi 6 firmware
+  /// `enum hpi_lock_state`). A HealthyPi Core does not implement it.
   bool? get locked => _lockState == null ? null : _lockState == 0;
 
   bool _wasOpen = false;
@@ -86,6 +99,7 @@ class DeviceStatusService extends ChangeNotifier {
   void _clear() {
     _info = null;
     _versions = null;
+    _versionsRaw = null;
     _telemetry = null;
     _stream = null;
     _sd = null;
@@ -102,8 +116,15 @@ class DeviceStatusService extends ChangeNotifier {
     if (_fw.busy || !_usb.controlConnected) return;
     final c = _usb.control;
     _info = (await c.deviceInfo()).value ?? _info;
-    _versions = (await c.fwVersions()).value ?? _versions;
-    _lockState = (await c.lockState()).value?.state ?? _lockState;
+    final v = await c.request(Hpi.fwVersions);
+    if (v.ok) {
+      _versionsRaw = v.value;
+      _versions = FwVersionsReply.fromMap(v.value!);
+    }
+    // A Core answers lock_state with ENOTSUP; don't spend a round trip on it.
+    if (!_usb.isCore) {
+      _lockState = (await c.lockState()).value?.state ?? _lockState;
+    }
     notifyListeners();
   }
 
@@ -117,14 +138,21 @@ class DeviceStatusService extends ChangeNotifier {
       _telemetry = (await c.telemetry()).value ?? _telemetry;
       _stream = (await c.streamStatus()).value ?? _stream;
       _sd = (await c.sdStatus()).value ?? _sd;
-      _lockState = (await c.lockState()).value?.state ?? _lockState;
       _conn = (await c.connStatus()).value ?? _conn;
-      // wifi_status answers HW_FAULT while the co-processor is held in reset.
-      final w = await c.wifiStatus();
-      _wifi = w.value ?? (w.failure?.rc != null ? null : _wifi);
-      // The M4 version arrives over IPC a few seconds after boot.
-      if ((_versions?.m4fw ?? '').isEmpty) {
-        _versions = (await c.fwVersions()).value ?? _versions;
+      // The Core implements none of lock_state, wifi_status or an M4.
+      if (!_usb.isCore) {
+        _lockState = (await c.lockState()).value?.state ?? _lockState;
+        // wifi_status answers HW_FAULT while the co-processor is held in reset.
+        final w = await c.wifiStatus();
+        _wifi = w.value ?? (w.failure?.rc != null ? null : _wifi);
+        // The M4 version arrives over IPC a few seconds after boot.
+        if ((_versions?.m4fw ?? '').isEmpty) {
+          final v = await c.request(Hpi.fwVersions);
+          if (v.ok) {
+            _versionsRaw = v.value;
+            _versions = FwVersionsReply.fromMap(v.value!);
+          }
+        }
       }
       notifyListeners();
     } finally {
@@ -136,7 +164,9 @@ class DeviceStatusService extends ChangeNotifier {
   /// until then every recording is stamped with time 0. Set it from this
   /// machine in that case only; a clock that is already set is left alone.
   Future<void> _syncClock() async {
-    if (!_usb.controlConnected) return;
+    // The Core's group 0 has echo, reset, params and os info, not datetime;
+    // its RTC (RV-3028) is not exposed over SMP yet.
+    if (!_usb.controlConnected || _usb.isCore) return;
     final c = _usb.control;
     final read = await c.readDatetime();
     if (read.ok) {

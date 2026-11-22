@@ -135,7 +135,7 @@ class _LinkChip extends StatelessWidget {
           );
         }
         final transport = usb.isConnected
-            ? 'USB CDC · ${_shortPort(usb.connectedPortName)}'
+            ? '${usb.isCore ? 'USB SMP' : 'USB CDC'} · ${_shortPort(usb.connectedPortName)}'
             : 'WiFi · ${wifi.connectedDevice ?? "tcp"}';
         return HpiChip(
           tone: p.success,
@@ -143,7 +143,7 @@ class _LinkChip extends StatelessWidget {
           children: [
             HpiStatusDot(color: p.success, size: 7, pulse: true),
             Text(
-              'HealthyPi 6',
+              usb.isConnected && usb.isCore ? 'HealthyPi Core' : 'HealthyPi 6',
               style: HpiText.control(p)
                   .copyWith(color: p.textPrimary, fontWeight: FontWeight.w500),
             ),

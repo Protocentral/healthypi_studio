@@ -89,9 +89,14 @@ class ConnectScreenState extends State<ConnectScreen> {
     // in recovery is its own row; anything else is listed port by port.
     final devices = usb.healthyPiDevices;
     final recovery = usb.recoveryPorts;
+    // A HealthyPi Core is one port. It shares its VID:PID with the
+    // HealthyPi 5 and is told apart by its product string; a HealthyPi 5
+    // stays a plain port row below.
+    final cores = usb.coreDevices;
     final grouped = {
       for (final d in devices) ...d.map((i) => i.portName),
       for (final r in recovery) r.portName,
+      for (final c in cores) c.portName,
     };
     final ports = usb
         .getAllPortsInfo()
@@ -101,8 +106,9 @@ class ConnectScreenState extends State<ConnectScreen> {
         _filter == _SourceFilter.all || _filter == _SourceFilter.usb;
     final showWifi =
         _filter == _SourceFilter.all || _filter == _SourceFilter.wifi;
-    final found =
-        showUsb ? devices.length + recovery.length + ports.length : 0;
+    final found = showUsb
+        ? devices.length + cores.length + recovery.length + ports.length
+        : 0;
 
     return Center(
       child: SingleChildScrollView(
@@ -127,7 +133,8 @@ class ConnectScreenState extends State<ConnectScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Plug a HealthyPi 6 in over USB, or reach it over WiFi. Studio '
+                'Plug a HealthyPi 6 or HealthyPi Core in over USB, or reach a '
+                'HealthyPi 6 over WiFi. Studio '
                 'keeps showing demo data until a real device is attached.',
                 textAlign: TextAlign.center,
                 style: HpiText.body(p).copyWith(fontSize: 13, height: 1.6),
@@ -191,6 +198,7 @@ class ConnectScreenState extends State<ConnectScreen> {
                     ),
                     if (showUsb) ...[
                       for (final d in devices) _healthyPiRow(context, d),
+                      for (final c in cores) _coreRow(context, c),
                       for (final r in recovery) _recoveryRow(context, r),
                       for (final port in ports) _usbRow(context, port),
                     ],
@@ -335,6 +343,33 @@ class ConnectScreenState extends State<ConnectScreen> {
     );
   }
 
+  /// A HealthyPi Core: one port carries control and the stream. Connect
+  /// confirms it with an SMP echo, so a board that only borrows the name and
+  /// ids is refused.
+  Widget _coreRow(BuildContext context, UsbDeviceInfo port) {
+    final p = context.hpi;
+    final busy = _connecting == port.portName;
+    return _DeviceRow(
+      icon: Icons.usb,
+      iconTone: p.brand,
+      highlight: true,
+      title: port.displayName,
+      subtitle: '${port.portName.split('/').last} · '
+          'VID ${port.vidHex} PID ${port.pidHex}',
+      transport: 'USB SMP',
+      detail: port.serialNumber == null ? 'one port' : 'SN ${port.serialNumber}',
+      primary: true,
+      busy: busy,
+      onConnect: busy
+          ? null
+          : () => _connectUsb(
+              port.portName, (usb) => usb.connectCore(port.portName),
+              failure: '${port.portName.split('/').last} did not answer as a '
+                  'HealthyPi Core (no SMP echo). Is it in use, or running '
+                  'firmware without Studio mode?'),
+    );
+  }
+
   /// A unit in MCUboot serial recovery: no data stream to connect to.
   /// Recovery itself is run from the Device screen.
   Widget _recoveryRow(BuildContext context, UsbDeviceInfo port) {
@@ -420,7 +455,8 @@ class ConnectScreenState extends State<ConnectScreen> {
   }
 
   Future<void> _connectUsb(
-      String key, Future<bool> Function(UsbSerialService usb) open) async {
+      String key, Future<bool> Function(UsbSerialService usb) open,
+      {String? failure}) async {
     setState(() {
       _connecting = key;
       _error = null;
@@ -435,7 +471,8 @@ class ConnectScreenState extends State<ConnectScreen> {
       _connecting = null;
       _error = ok
           ? null
-          : 'Could not open ${key.split('|').first}. Is it already in use?';
+          : (failure ??
+              'Could not open ${key.split('|').first}. Is it already in use?');
     });
   }
 

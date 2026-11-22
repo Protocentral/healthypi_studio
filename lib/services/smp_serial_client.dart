@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:mcumgr_dart/mcumgr_dart.dart';
 
 import '../protocol/hpi_command.dart';
+import '../protocol/hpi_core.dart';
 import '../protocol/hpi_group64.g.dart';
 import 'smp/byte_stream_transport.dart';
 import 'smp/serial_transport.dart';
@@ -31,6 +32,14 @@ class SmpSerialClient {
   SmpClient? _client;
   ImgMgmt? _img;
   OsMgmt? _os;
+  StreamSubscription<SmpMessage>? _unsolicitedSub;
+  final StreamController<SmpMessage> _notifications =
+      StreamController<SmpMessage>.broadcast(sync: true);
+
+  /// Frames the device sent that answer no request — on a HealthyPi Core, the
+  /// sample stream (group 64, id 0xC0). Survives [open]/[close]: it follows
+  /// whichever link is open, so a listener subscribes once.
+  Stream<SmpMessage> get notifications => _notifications.stream;
 
   /// HealthyPi's vendor management group.
   static const int controlGroup = hpiGroupId;
@@ -89,6 +98,7 @@ class SmpSerialClient {
 
   void _bind(ByteStreamSmpTransport transport) {
     final SmpClient client = SmpClient(transport);
+    _unsolicitedSub = client.unsolicited.listen(_notifications.add);
     _transport = transport;
     _client = client;
     _img = ImgMgmt(client, maxWriteLength: () => transport.maxWriteLength);
@@ -102,6 +112,8 @@ class SmpSerialClient {
     _client = null;
     _img = null;
     _os = null;
+    unawaited(_unsolicitedSub?.cancel());
+    _unsolicitedSub = null;
     unawaited(client?.dispose());
     unawaited(transport?.disconnect());
   }
@@ -196,10 +208,30 @@ class SmpSerialClient {
   Future<HpiResult<TelemetryReply>> telemetry() =>
       _typed(Hpi.telemetry, TelemetryReply.fromMap);
 
-  /// 0 = unlocked. A locked device rejects stream_start, sd_record_start and
-  /// transfer_mode.
+  /// `state`: 0 = locked, 1 = unlocked (firmware `enum hpi_lock_state`,
+  /// app_m7/src/control/security/hpi_security.h). A locked device rejects
+  /// stream_start, sd_record_start and transfer_mode. A HealthyPi Core answers
+  /// ENOTSUP: its lock state is unknown, and treated as unlocked.
   Future<HpiResult<LockStateReply>> lockState() =>
       _typed(Hpi.lockState, LockStateReply.fromMap);
+
+  // ---- HealthyPi Core only ----
+
+  /// Reboot a HealthyPi Core into the RP2350 ROM bootloader (BOOTSEL). The
+  /// device may reset before its reply leaves, so no reply is not a failure;
+  /// a refusal (an error rc) is.
+  Future<HpiResult<void>> resetBootsel(
+      {Duration timeout = const Duration(seconds: 2)}) async {
+    final r = await request(HpiCore.resetBootsel, timeout: timeout);
+    final f = r.failure;
+    if (f != null && f.timedOut) {
+      return const HpiResult.ok(null);
+    }
+    return r;
+  }
+
+  /// Put a HealthyPi Core's ESP32-C6 into its ROM flash mode.
+  Future<HpiResult<void>> c6FlashMode() => request(HpiCore.c6FlashMode);
 
   // ---- connectivity (ESP32-C6 co-processor) ----
 
@@ -444,14 +476,18 @@ class SmpSerialClient {
 
 /// Why a group-64 request did not succeed.
 class HpiFailure {
-  const HpiFailure._(this.command, this.message, {this.rc, this.group});
+  const HpiFailure._(this.command, this.message,
+      {this.rc, this.group, this.timedOut = false});
 
   factory HpiFailure.notConnected(HpiCommand command) =>
       HpiFailure._(command, 'control port not open');
 
-  factory HpiFailure.transport(HpiCommand command, SmpException e) =>
-      HpiFailure._(command,
-          e.message.contains('timed out') ? 'no reply from the device' : e.message);
+  factory HpiFailure.transport(HpiCommand command, SmpException e) {
+    final timedOut = e.message.contains('timed out');
+    return HpiFailure._(
+        command, timedOut ? 'no reply from the device' : e.message,
+        timedOut: timedOut);
+  }
 
   factory HpiFailure.fromReply(HpiCommand command, int rc, int? group) =>
       HpiFailure._(command, 'rc $rc', rc: rc, group: group);
@@ -464,6 +500,9 @@ class HpiFailure {
 
   /// The group that raised [rc] (SMP v2), when reported.
   final int? group;
+
+  /// The device did not answer in time.
+  final bool timedOut;
 
   /// The catalog entry for a group-64 error code.
   HpiErrorCode? get code =>

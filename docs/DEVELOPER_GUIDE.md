@@ -39,6 +39,7 @@ Device (HealthyPi 6)
 - `getPortInfo()` reads VID/PID/product/serial from the USB descriptors (unopened; falls back to name-only if the host refuses). `healthyPiDevices` groups a unit's ports; `recoveryPorts` lists units in MCUboot recovery, which `connect()` refuses to open as data.
 - `connectDevice(ports)` finds CDC1 as the port that answers `os echo`, then opens the other as CDC0. On connect, the control port (`control` → `SmpSerialClient`) is opened and `stream_start` sent. CDC1 also drives OTA, recovery, SD record and MSC transfer mode.
 - `expectReset()` extends auto-reconnect through a firmware update's reboots.
+- **HealthyPi Core** (`isCore`, `coreDevices`, `connectCore(port)`): one port. `connectCore` opens the `SmpSerialClient` on it, confirms with `os echo`, and routes `control.notifications` through `CoreStreamRouter` into the DataParser; `isConnected` is true while that link is open. `connect()` redirects a Core port to `connectCore`, so it is never opened as raw DBLK. See [PROTOCOL_REFERENCE.md §4.1](PROTOCOL_REFERENCE.md).
 - Always call `refreshDevices()` before showing a device picker.
 
 ### 2.2 WiFi ([wifi_serial_service.dart](../lib/services/wifi_serial_service.dart))
@@ -122,6 +123,8 @@ Screen: the **Firmware update** panel on the Device screen ([device_screen.dart]
 - **No trial, no confirm:** MCUboot is overwrite-only with downgrade prevention. Studio used to tell users to "confirm" the image; that action is gone.
 - **Tests:** `firmware_bundle_test.dart` (signature, digests, versions) and `firmware_updater_test.dart` (a fake board: stale abort, refused commit, downgrade, dev build, second reset).
 - **Still beta:** not yet run against hardware from Studio; only the development signing key is trusted (release blocker in `keys.dart`); `osReset` itself still treats a timeout as success, since the device often resets before replying, but the read-back after reconnect is what decides the result now.
+
+**HealthyPi Core:** a `.uf2` selection switches the panel to the Core variant. `FirmwareUpdateService` drives `Uf2Updater` ([uf2_updater.dart](../lib/services/firmware/uf2_updater.dart)): `reset_bootsel` → let go of the port → poll `picotool info` until the boot ROM appears → `picotool load -x` → reconnect with `connectCore` → `fw_versions`. Without picotool it stops before touching the board. Tested with fakes in `uf2_updater_test.dart`; not yet run on hardware.
 
 Full SMP surface: [PROTOCOL_REFERENCE.md §3](PROTOCOL_REFERENCE.md).
 

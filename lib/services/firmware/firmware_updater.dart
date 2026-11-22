@@ -400,6 +400,12 @@ enum UpdateStage {
   markingM7,
   resetting,
   verifying,
+
+  /// HealthyPi Core: waiting for the RP2350 boot ROM to enumerate.
+  waitingBootrom,
+
+  /// HealthyPi Core: picotool is writing the UF2.
+  loadingUf2,
   done,
   failed,
 }

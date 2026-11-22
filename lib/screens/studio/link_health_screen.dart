@@ -497,10 +497,17 @@ class _SidePanel extends StatelessWidget {
                     ? (usb.connectedPortName?.split('/').last ?? '—')
                     : (wifi.isConnected ? '${wifi.port}' : '—'),
               ),
-              HpiKeyValue('Baud', usb.isConnected ? '921 600' : '—'),
+              HpiKeyValue('Baud',
+                  usb.isConnected && !usb.isCore ? '921 600' : '—'),
               HpiKeyValue('Protocol', parser.protocolVersionString),
-              HpiKeyValue('Control port',
-                  usb.controlConnected ? 'open (CDC1)' : 'closed'),
+              HpiKeyValue(
+                  'Control port',
+                  usb.controlConnected
+                      ? (usb.isCore ? 'same port (SMP)' : 'open (CDC1)')
+                      : 'closed'),
+              if (usb.isCore)
+                HpiKeyValue('Stream blocks',
+                    '${usb.coreStream.blocks} · ${usb.coreStream.malformed} malformed'),
               HpiKeyValue('Buffered packets', '${parser.availablePackets}'),
               if (usb.isReconnecting)
                 HpiNote('Reconnecting — attempt ${usb.reconnectAttempts}',
