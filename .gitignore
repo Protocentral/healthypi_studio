@@ -128,3 +128,6 @@ CLAUDE.md
 
 # JetBrains IDE settings — local, not shared
 .idea/
+
+# macOS Finder metadata
+.DS_Store
